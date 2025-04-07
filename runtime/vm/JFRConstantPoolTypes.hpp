@@ -275,6 +275,13 @@ struct ThreadStatisticsEntry {
 	U_64 peakThreadCount;
 };
 
+struct NativeLibraryEntry {
+	I_64 ticks;
+	const char *name;
+	UDATA addressLow;
+	UDATA addressHigh;
+};
+
 struct JVMInformationEntry {
 	const char *jvmName;
 	const char *jvmVersion;
@@ -292,6 +299,7 @@ struct CPUInformationEntry {
 	U_32 cores;
 	U_32 hwThreads;
 };
+
 
 struct GCHeapConfigurationEntry {
 	U_64 minSize;
@@ -377,6 +385,8 @@ private:
 	UDATA _threadContextSwitchRateCount;
 	J9Pool *_threadStatisticsTable;
 	UDATA _threadStatisticsCount;
+	J9Pool *_nativeLibraryTable;
+        UDATA _nativeLibraryCount;
 
 	/* Processing buffers */
 	StackFrame *_currentStackFrameBuffer;
@@ -654,6 +664,8 @@ public:
 
 	void addThreadStatisticsEntry(J9JFRThreadStatistics *threadStatisticsData);
 
+	void addNativeLibraryEntry(J9JFRNativeLibrary *nativeLibraryData);
+
 	J9Pool *getExecutionSampleTable()
 	{
 		return _executionSampleTable;
@@ -712,6 +724,11 @@ public:
 	J9Pool *getThreadStatisticsTable()
 	{
 		return _threadStatisticsTable;
+	}
+
+	J9Pool *getNativeLibraryTable()
+	{
+		return _nativeLibraryTable;
 	}
 
 	UDATA getExecutionSampleCount()
@@ -773,6 +790,11 @@ public:
 	{
 		return _threadStatisticsCount;
 	}
+
+	UDATA getNativeLibraryCount()
+        {
+                return _nativeLibraryCount;
+        }
 
 	ClassloaderEntry *getClassloaderEntry()
 	{
@@ -937,6 +959,9 @@ public:
 				break;
 			case J9JFR_EVENT_TYPE_THREAD_STATISTICS:
 				addThreadStatisticsEntry((J9JFRThreadStatistics *)event);
+				break;
+			case J9JFR_EVENT_TYPE_NATIVE_LIBRARY:
+				addNativeLibraryEntry((J9JFRNativeLibrary *)event);
 				break;
 			default:
 				Assert_VM_unreachable();
@@ -1295,6 +1320,8 @@ done:
 		, _threadContextSwitchRateCount(0)
 		, _threadStatisticsTable(NULL)
 		, _threadStatisticsCount(0)
+		, _nativeLibraryTable(NULL)
+		, _nativeLibraryCount(0)
 		, _previousStackTraceEntry(NULL)
 		, _firstStackTraceEntry(NULL)
 		, _previousThreadEntry(NULL)
@@ -1439,6 +1466,12 @@ done:
 			goto done;
 		}
 
+		_nativeLibraryTable = pool_new(sizeof(NativeLibraryEntry), 0, sizeof(U_64), 0, J9_GET_CALLSITE(), OMRMEM_CATEGORY_VM, POOL_FOR_PORT(privatePortLibrary));
+		if (NULL == _nativeLibraryTable ) {
+			_buildResult = OutOfMemory;
+			goto done;
+		}
+
 		/* Add reserved index for default entries. For strings zero is the empty or NUll string.
 		 * For package zero is the deafult package, for Module zero is the unnamed module. ThreadGroup
 		 * zero is NULL threadGroup.
@@ -1532,6 +1565,7 @@ done:
 		pool_kill(_classLoadingStatisticsTable);
 		pool_kill(_threadContextSwitchRateTable);
 		pool_kill(_threadStatisticsTable);
+		pool_kill(_nativeLibraryTable);
 		j9mem_free_memory(_globalStringTable);
 	}
 

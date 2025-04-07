@@ -114,6 +114,9 @@ jfrEventSize(J9JFREvent *jfrEvent)
 	case J9JFR_EVENT_TYPE_THREAD_STATISTICS:
 		size = sizeof(J9JFRThreadStatistics);
 		break;
+	case J9JFR_EVENT_TYPE_NATIVE_LIBRARY:
+		size = sizeof(J9JFRNativeLibrary);
+		break;
 	default:
 		Assert_VM_unreachable();
 		break;
@@ -807,6 +810,7 @@ initializeJFR(J9JavaVM *vm, BOOLEAN lateInit)
 
 	vm->jfrState.prevSysCPUTime.timestamp = -1;
 	vm->jfrState.prevProcTimestamp = -1;
+	vm->jfrState.nativeLibraries = NULL;
 
 	if (0 == omrsysinfo_get_number_context_switches(&vm->jfrState.prevContextSwitches)) {
 		vm->jfrState.prevContextSwitchTimestamp = j9time_nano_time();
@@ -1137,6 +1141,61 @@ jfrThreadStatistics(J9VMThread *currentThread)
 
 }
 
+uintptr_t
+ProcessNativeLibrariesCallback(const char *libraryName, void *lowAddress, void *highAddress, void *userData)
+{
+	if (NULL == strstr(libraryName, ".so")) {
+		return 0;
+	}
+	JFRState *jfrState = (JFRState *)userData;
+
+	JFRNativeLibraryNode *current = jfrState->nativeLibraries;
+	while (current) {
+		if (strcmp(current->name, libraryName) == 0) {
+			if ((UDATA)lowAddress < current->addressLow) {
+				current->addressLow = (UDATA)lowAddress;
+			}
+			if ((UDATA)highAddress > current->addressHigh) {
+				current->addressHigh = (UDATA)highAddress;
+			}
+			return 0;
+		}
+		current = current->next;
+	}
+	JFRNativeLibraryNode *newLibrary = (JFRNativeLibraryNode *)malloc(sizeof(JFRNativeLibraryNode));
+	if (newLibrary) {
+		newLibrary->name = strdup(libraryName);
+		newLibrary->addressLow = (UDATA)lowAddress;
+		newLibrary->addressHigh = (UDATA)highAddress;
+		newLibrary->next = jfrState->nativeLibraries;
+		jfrState->nativeLibraries = newLibrary;
+	}
+	return 0;
+}
+
+static void
+jfrNativeLibrary(J9VMThread *currentThread)
+{
+	PORT_ACCESS_FROM_VMC(currentThread);
+        OMRPORT_ACCESS_FROM_J9PORT(PORTLIB);
+	JFRState *jfrState = &currentThread->javaVM->jfrState;
+	uintptr_t result = omrsl_get_libraries(ProcessNativeLibrariesCallback, jfrState);
+	if (result != 0) {
+		return;
+	}
+	JFRNativeLibraryNode *current = jfrState->nativeLibraries;
+	 while (current) {
+		 J9JFRNativeLibrary *jfrEvent = (J9JFRNativeLibrary *)reserveBuffer(currentThread, sizeof(J9JFRNativeLibrary));
+		 if (jfrEvent != NULL) {
+			 initializeEventFields(currentThread, (J9JFREvent *)jfrEvent, J9JFR_EVENT_TYPE_NATIVE_LIBRARY);
+			 jfrEvent->name = strdup(current->name);
+			 jfrEvent->addressLow = current->addressLow;
+			 jfrEvent->addressHigh = current->addressHigh;
+		 }
+		 current = current->next;
+	 }
+}
+
 static int J9THREAD_PROC
 jfrSamplingThreadProc(void *entryArg)
 {
@@ -1159,6 +1218,7 @@ jfrSamplingThreadProc(void *entryArg)
 				if (0 == (count % 1000)) { // 10 seconds
 					J9SignalAsyncEvent(vm, NULL, vm->jfrThreadCPULoadAsyncKey);
 					jfrThreadContextSwitchRate(currentThread);
+					jfrNativeLibrary(currentThread);
 				}
 				internalReleaseVMAccess(currentThread);
 				omrthread_monitor_enter(vm->jfrSamplerMutex);

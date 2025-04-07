@@ -1029,6 +1029,35 @@ VM_JFRChunkWriter::writeThreadStatisticsEvent(void *anElement, void *userData)
 	writeEventSize(_bufferWriter, dataStart);
 }
 
+void
+VM_JFRChunkWriter::writeNativeLibraryEvent(void *anElement, void *userData)
+{
+	NativeLibraryEntry *entry = (NativeLibraryEntry *)anElement;
+	VM_JFRChunkWriter *_writer = (VM_JFRChunkWriter *)userData;
+	VM_BufferWriter *_bufferWriter = _writer->_bufferWriter;
+	
+	/* reserve size field */
+	U_8 *dataStart = _writer->reserveEventSize(_bufferWriter);
+
+	/* write event type */
+	_bufferWriter->writeLEB128(NativeLibraryID);
+
+	/* write start time */
+	_bufferWriter->writeLEB128(entry->ticks);
+	
+	/* write library name */
+	_writer->writeStringLiteral(entry->name);
+
+	/* write base address */
+	_bufferWriter->writeLEB128(entry->addressLow);
+
+	/* write top address */
+	_bufferWriter->writeLEB128(entry->addressHigh);
+
+	/* write event size */
+	_writer->writeEventSize(_bufferWriter, dataStart);
+}
+
 static void
 writeObject(J9JavaVM *vm, j9object_t obj, VM_BufferWriter *bufferWriter)
 {
@@ -1238,6 +1267,7 @@ VM_JFRChunkWriter::writeThreadDumpEvent()
 
 	/* write start time */
 	_bufferWriter->writeLEB128(j9time_nano_time());
+	_bufferWriter->writeLEB128(j9time_current_time_millis());
 
 	const U_64 bufferSize = THREAD_DUMP_EVENT_SIZE_PER_THREAD * _vm->peakThreadCount;
 	U_8 *resultBuffer = (U_8 *)j9mem_allocate_memory(sizeof(U_8) * bufferSize, OMRMEM_CATEGORY_VM);

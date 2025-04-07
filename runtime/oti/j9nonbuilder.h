@@ -497,6 +497,19 @@ typedef struct J9JFRThreadContextSwitchRate {
 	float switchRate;
 } J9JFRThreadContextSwitchRate;
 
+typedef struct J9JFRNativeLibrary {
+	J9JFR_EVENT_COMMON_FIELDS;
+	const char* name;
+	UDATA addressHigh;
+	UDATA addressLow;
+} J9JFRNativeLibrary;
+
+typedef struct JFRNativeLibraryNode {
+	const char *name;
+	UDATA addressHigh;
+	UDATA addressLow;
+	struct JFRNativeLibraryNode *next;
+} JFRNativeLibraryNode;
 #endif /* defined(J9VM_OPT_JFR) */
 
 /* @ddr_namespace: map_to_type=J9CfrError */
@@ -5836,6 +5849,7 @@ typedef struct JFRState {
 	uint64_t prevContextSwitches;
 	omrthread_monitor_t typeIDMonitor;
 	jlong typeIDcount;
+	JFRNativeLibraryNode *nativeLibraries;
 } JFRState;
 
 typedef struct J9ReflectFunctionTable {
@@ -6384,6 +6398,7 @@ typedef struct J9JavaVM {
 	UDATA jfrSamplerState;
 	IDATA jfrAsyncKey;
 	IDATA jfrThreadCPULoadAsyncKey;
+	IDATA jfrNativeLibraryAsyncKey;
 #endif /* defined(J9VM_OPT_JFR) */
 #if JAVA_SPEC_VERSION >= 22
 	omrthread_monitor_t closeScopeMutex;

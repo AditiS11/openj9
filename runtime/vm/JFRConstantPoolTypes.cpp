@@ -1273,6 +1273,27 @@ done:
 }
 
 void
+VM_JFRConstantPoolTypes::addNativeLibraryEntry(J9JFRNativeLibrary *nativeLibraryData)
+{
+	NativeLibraryEntry *entry = (NativeLibraryEntry *)pool_newElement(_nativeLibraryTable);
+
+	if (NULL == entry) {
+                _buildResult = OutOfMemory;
+                goto done;
+        }
+
+	entry->ticks = nativeLibraryData->startTicks;
+	entry->name = nativeLibraryData->name;
+	entry->addressLow = nativeLibraryData->addressLow;
+	entry->addressHigh = nativeLibraryData->addressHigh;
+
+	_nativeLibraryCount += 1;
+
+done:
+	return;
+}
+
+void
 VM_JFRConstantPoolTypes::printTables()
 {
 	j9tty_printf(PORTLIB, "--------------- StringUTF8Table ---------------\n");
