@@ -25,6 +25,8 @@ package openj9.internal.foreign.abi;
 /*[IF JAVA_SPEC_VERSION >= 22]*/
 import java.util.Arrays;
 /*[ENDIF] JAVA_SPEC_VERSION >= 22 */
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 /*[IF JAVA_SPEC_VERSION >= 21]*/
@@ -123,7 +125,21 @@ public class InternalDowncallHandler {
 		}
 	}
 
-	private final ThreadLocal<HeapArgInfo> heapArgInfo;
+	/* heapArgInfo holds a per-thread stack of HeapArgInfo structures.
+	 * Each entry tracks Java references to heap-allocated memory segments
+	 *
+	 * createHeapArgInfo controls when a new entry should be created.
+	 * If true, a new HeapArgInfo is pushed for the current downcall
+	 * and the flag is reset to false.
+	 * Just before invoking the native method, the flag is set back to true
+	 * to correctly handle recursive downcalls.
+	 *
+	 * The stack ensures each recursive downcall pushes its own entry
+	 * and pops it after completion, so references remain alive for
+	 * the duration of that downcall.
+	 */
+	private static final ThreadLocal<Deque<HeapArgInfo>> heapArgInfo = ThreadLocal.withInitial(ArrayDeque::new);
+	private static final ThreadLocal<Boolean> createHeapArgInfo = ThreadLocal.withInitial(()->Boolean.TRUE);
 	/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 	/* The hashtables of sessions/scopes is intended for multithreading in which case
@@ -311,7 +327,8 @@ public class InternalDowncallHandler {
 	 */
 	private final long memSegmtOfPtrToLongArg(MemorySegment argValue, LinkerOptions options) throws IllegalStateException {
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
-		HeapArgInfo info = heapArgInfo.get();
+		Deque<HeapArgInfo> infoStack = heapArgInfo.get();
+		HeapArgInfo info = infoStack.peek();
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 		try {
@@ -323,8 +340,9 @@ public class InternalDowncallHandler {
 			 * is captured so as to reset the internal index and avoid retaining the references
 			 * to the unreachable objects.
 			 */
-			if (info != null) {
-				info.clear();
+			if (!createHeapArgInfo.get()) {
+				infoStack.pop();
+				createHeapArgInfo.set(Boolean.TRUE);
 			}
 			/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 			throw e;
@@ -332,9 +350,11 @@ public class InternalDowncallHandler {
 
 		long address = argValue.address();
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
-		if (info == null) {
+
+		if (createHeapArgInfo.get()) {
 			info = new HeapArgInfo(argLayoutArray.length);
-			heapArgInfo.set(info);
+			infoStack.push(info);
+			createHeapArgInfo.set(Boolean.FALSE);
 		}
 
 		if (!argValue.isNative() && options.allowsHeapAccess()) {
@@ -369,9 +389,10 @@ public class InternalDowncallHandler {
 			 * is captured so as to reset the internal index and avoid retaining the references
 			 * to the unreachable objects.
 			 */
-			HeapArgInfo info = heapArgInfo.get();
-			if (info != null) {
-				info.clear();
+			Deque<HeapArgInfo> infoStack = heapArgInfo.get();
+			if (!createHeapArgInfo.get()) {
+				infoStack.pop();
+				createHeapArgInfo.set(Boolean.TRUE);
 			}
 			/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 			throw e;
@@ -505,10 +526,6 @@ public class InternalDowncallHandler {
 		/*[IF JAVA_SPEC_VERSION == 17]*/
 		scopeHandleMap = new ConcurrentHashMap<>();
 		/*[ENDIF] JAVA_SPEC_VERSION == 17 */
-
-		/*[IF JAVA_SPEC_VERSION >= 22]*/
-		heapArgInfo = new ThreadLocal<>();
-		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 		try {
 			/*[IF JAVA_SPEC_VERSION >= 21]*/
@@ -882,7 +899,17 @@ public class InternalDowncallHandler {
 
 		long returnVal;
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
-		HeapArgInfo info = heapArgInfo.get();
+		Deque<HeapArgInfo> infoStack = heapArgInfo.get();
+		HeapArgInfo info;
+		/* Check if current downcall has pointer arguments. */
+		boolean pointerArgs = true;
+		if (createHeapArgInfo.get()) {
+			info = null;
+			pointerArgs = false;
+		} else {
+			info = infoStack.peek();
+			createHeapArgInfo.set(Boolean.TRUE);
+		}
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 		/* The scope associated with memory specific arguments must be kept alive
 		 * during the downcall since JDK17, including the downcall adddress.
@@ -936,8 +963,8 @@ public class InternalDowncallHandler {
 			 * so as to reset the internal index and avoid retaining the references to the
 			 * unreachable objects.
 			 */
-			if (info != null) {
-				info.clear();
+			if (pointerArgs) {
+				infoStack.pop();
 			}
 		}
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
