@@ -1732,15 +1732,13 @@ obj:
 				if (NULL != method) {
 					U_32 modifiers = J9_ROM_METHOD_FROM_RAM_METHOD(method)->modifiers;
 					/* Finding a public method means it is necessarily abstract (this function only handles exceptional cases) */
-					if (J9_ARE_NO_BITS_SET(modifiers, J9AccPublic)) {
+					if (J9_ARE_NO_BITS_SET(modifiers, J9AccPublic) | J9_ARE_NO_BITS_SET(modifiers, J9AccPrivate)) {
 						/* Starting with JDK11, private methods expressly do not override any methods from
 						 * superclass/superinterfaces, so AbstractMethodError is the correct error to throw.
 						 * For default or protected methods or JDK levels prior to 11, throw IllegalAccessError.
 						 */
-						if ((J2SE_VERSION(_vm) < J2SE_V11) || (J9_ARE_NO_BITS_SET(modifiers, J9AccPrivate))) {
-							exception = J9VMCONSTANTPOOL_JAVALANGILLEGALACCESSERROR;
-							_sendMethod = method;
-						}
+						exception = J9VMCONSTANTPOOL_JAVALANGILLEGALACCESSERROR;
+						_sendMethod = method;
 					}
 				}
 			}
