@@ -1176,6 +1176,7 @@ resolveInterfaceMethodRefInto(J9VMThread *vmStruct, J9ConstantPool *ramCP, UDATA
 		cpClass = J9_CLASS_FROM_CP(ramCP);
 		lookupOptions |= J9_LOOK_CLCONSTRAINTS;
 	}
+	lookupOptions |= J9_INVOKEINTERFACE;
 	method = (J9Method *)javaLookupMethod(vmStruct, interfaceClass, nameAndSig, cpClass, lookupOptions);
 
 	Trc_VM_resolveInterfaceMethodRef_lookupMethod(vmStruct, method);
