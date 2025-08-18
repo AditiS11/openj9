@@ -1745,6 +1745,16 @@ obj:
 							_sendMethod = method;
 						}
 					}
+					J9Class *receiverClass = J9OBJECT_CLAZZ(_currentThread, *(j9object_t*)_arg0EA);
+					J9UTF8 *receiverClassName = J9ROMCLASS_CLASSNAME(receiverClass->romClass);
+					J9Class *foundMethodClass = J9_CLASS_FROM_METHOD(method);
+					J9UTF8* foundMethodClassName = J9ROMCLASS_CLASSNAME(foundMethodClass->romClass);
+					 if (J9UTF8_EQUALS(receiverClassName, foundMethodClassName)) {
+						 if (J9_ARE_ANY_BITS_SET(modifiers, J9AccPrivate)) {
+							  exception =  J9VMCONSTANTPOOL_JAVALANGILLEGALACCESSERROR;
+							  _sendMethod = method;
+						 }
+					 }
 				}
 			}
 		}
