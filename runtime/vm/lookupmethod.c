@@ -701,6 +701,13 @@ retry:
 			if (foundMethod != NULL) {
 				UDATA modifiers = J9_ROM_METHOD_FROM_RAM_METHOD(foundMethod)->modifiers;
 				if (J9_ARE_ANY_BITS_SET(lookupOptions, J9_INVOKEINTERFACE) && J9_ARE_ANY_BITS_SET(modifiers, J9AccPrivate)) {
+					J9Class *foundMethodClass = J9_CLASS_FROM_METHOD(foundMethod);
+					J9UTF8* foundMethodClassName = J9ROMCLASS_CLASSNAME(foundMethodClass->romClass);
+					J9UTF8* ResolvedMethodClassName = J9ROMCLASS_CLASSNAME(targetClass->romClass);
+					if (J9UTF8_EQUALS(ResolvedMethodClassName, foundMethodClassName)) {
+						resultMethod = processMethod(currentThread, lookupOptions, foundMethod, lookupClass, &exception, &exceptionClass, &errorType, nameAndSig, senderClass, targetClass);
+						goto done;
+					}
 					goto nextClass;
 				}
 				resultMethod = processMethod(currentThread, lookupOptions, foundMethod, lookupClass, &exception, &exceptionClass, &errorType, nameAndSig, senderClass, targetClass);
