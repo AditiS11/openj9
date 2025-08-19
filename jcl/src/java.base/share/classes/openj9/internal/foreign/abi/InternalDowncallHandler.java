@@ -27,6 +27,8 @@ import java.util.Arrays;
 /*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 import java.util.HashMap;
 import java.util.List;
+import java.util.Deque;
+import java.util.ArrayDeque;
 /*[IF JAVA_SPEC_VERSION >= 21]*/
 import java.util.Objects;
 /*[ENDIF] JAVA_SPEC_VERSION >= 21 */
@@ -123,7 +125,7 @@ public class InternalDowncallHandler {
 		}
 	}
 
-	private final ThreadLocal<HeapArgInfo> heapArgInfo;
+	private static final ThreadLocal<Deque<HeapArgInfo>> heapArgInfo =  ThreadLocal.withInitial(ArrayDeque::new);
 	/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 	/* The hashtables of sessions/scopes is intended for multithreading in which case
@@ -311,7 +313,10 @@ public class InternalDowncallHandler {
 	 */
 	private final long memSegmtOfPtrToLongArg(MemorySegment argValue, LinkerOptions options) throws IllegalStateException {
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
-		HeapArgInfo info = heapArgInfo.get();
+		Deque<HeapArgInfo> infoStack = heapArgInfo.get();
+		//HeapArgInfo info = infoStack.peek();
+		HeapArgInfo info = new HeapArgInfo(argLayoutArray.length);
+		infoStack.push(info);
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 		try {
@@ -332,10 +337,11 @@ public class InternalDowncallHandler {
 
 		long address = argValue.address();
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
-		if (info == null) {
-			info = new HeapArgInfo(argLayoutArray.length);
-			heapArgInfo.set(info);
-		}
+
+		//if (info == null) {
+			//info = new HeapArgInfo(argLayoutArray.length);
+			//infoStack.push(info);
+		//}
 
 		if (!argValue.isNative() && options.allowsHeapAccess()) {
 			/* Store the heap argument's base object and offset. */
@@ -369,9 +375,12 @@ public class InternalDowncallHandler {
 			 * is captured so as to reset the internal index and avoid retaining the references
 			 * to the unreachable objects.
 			 */
-			HeapArgInfo info = heapArgInfo.get();
-			if (info != null) {
-				info.clear();
+			Deque<HeapArgInfo> infoStack = heapArgInfo.get();
+			if (!infoStack.isEmpty()) {
+				HeapArgInfo info = infoStack.peek();
+				if (info != null) {
+					info.clear();
+				}
 			}
 			/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 			throw e;
@@ -507,7 +516,7 @@ public class InternalDowncallHandler {
 		/*[ENDIF] JAVA_SPEC_VERSION == 17 */
 
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
-		heapArgInfo = new ThreadLocal<>();
+		//heapArgInfo = ThreadLocal.withInitial(ArrayDeque::new);
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 		try {
@@ -882,7 +891,8 @@ public class InternalDowncallHandler {
 
 		long returnVal;
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
-		HeapArgInfo info = heapArgInfo.get();
+		Deque<HeapArgInfo> infoStack = heapArgInfo.get();
+		HeapArgInfo info = infoStack.peek();
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 		/* The scope associated with memory specific arguments must be kept alive
 		 * during the downcall since JDK17, including the downcall adddress.
@@ -936,8 +946,8 @@ public class InternalDowncallHandler {
 			 * so as to reset the internal index and avoid retaining the references to the
 			 * unreachable objects.
 			 */
-			if (info != null) {
-				info.clear();
+			if (!infoStack.isEmpty()) {
+				infoStack.pop();
 			}
 		}
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
