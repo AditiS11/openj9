@@ -122,7 +122,7 @@ public class InternalDowncallHandler {
 	}
 
 	private static final ThreadLocal<Deque<HeapArgInfo>> heapArgInfo = ThreadLocal.withInitial(ArrayDeque::new);
-	private static final ThreadLocal<Deque<Boolean>> frameOwnedByRun = ThreadLocal.withInitial(ArrayDeque::new);
+	private static final ThreadLocal<Boolean> flagCreateHeapArgInfo = ThreadLocal.withInitial(()->Boolean.TRUE);
 	/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 	/* The hashtables of sessions/scopes is intended for multithreading in which case
@@ -311,17 +311,17 @@ public class InternalDowncallHandler {
 	private final long memSegmtOfPtrToLongArg(MemorySegment argValue, LinkerOptions options) throws IllegalStateException {
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
 		Deque<HeapArgInfo> infoStack = heapArgInfo.get();
-		Deque<Boolean> ownershipStack = frameOwnedByRun.get();
 		HeapArgInfo info;
-		if (ownershipStack.peek() == Boolean.FALSE) {
+		if (flagCreateHeapArgInfo.get()) {
 			info = new HeapArgInfo(argLayoutArray.length);
 			infoStack.push(info);
-			ownershipStack.pop();
-			ownershipStack.push(Boolean.TRUE);
+			flagCreateHeapArgInfo.set(Boolean.FALSE);
+			System.out.println("Created a new HeapArgInfo of size " + argLayoutArray.length);
 		}
 		else {
 			info = infoStack.peek();
 		}
+
 		try {
 			UpcallMHMetaData.validateNativeArgRetSegmentOfPtr(argValue, options);
 			addMemArgScope(argValue.scope());
@@ -331,9 +331,9 @@ public class InternalDowncallHandler {
 			 * is captured so as to reset the internal index and avoid retaining the references
 			 * to the unreachable objects.
 			 */
-			if (!ownershipStack.isEmpty() && ownershipStack.peek() == Boolean.TRUE) {
+			if(!flagCreateHeapArgInfo.get() && !infoStack.isEmpty()) {
 				infoStack.pop();
-				 ownershipStack.pop();
+				flagCreateHeapArgInfo.set(Boolean.TRUE);
 			}
 			/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 			throw e;
@@ -375,10 +375,9 @@ public class InternalDowncallHandler {
 			 * to the unreachable objects.
 			 */
 			Deque<HeapArgInfo> infoStack = heapArgInfo.get();
-			Deque<Boolean> ownershipStack = frameOwnedByRun.get();
-			if (!ownershipStack.isEmpty() && ownershipStack.peek() == Boolean.TRUE) {
+			if(!flagCreateHeapArgInfo.get() && !infoStack.isEmpty()) {
 				infoStack.pop();
-				ownershipStack.pop();
+				flagCreateHeapArgInfo.set(Boolean.TRUE);
 			}
 			/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 			throw e;
@@ -849,7 +848,9 @@ public class InternalDowncallHandler {
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
 		Deque<HeapArgInfo> infoStack = heapArgInfo.get();
 		HeapArgInfo info = infoStack.peek();
-		Deque<Boolean> ownershipStack = frameOwnedByRun.get();
+		if (!flagCreateHeapArgInfo.get()) {
+			System.out.println("The call to memSegmtOfPtrToLongArg is completed");
+		}
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 		/*[IF JAVA_SPEC_VERSION >= 21]*/
@@ -950,11 +951,10 @@ public class InternalDowncallHandler {
 			 * so as to reset the internal index and avoid retaining the references to the
 			 * unreachable objects.
 			 */
-			if (!ownershipStack.isEmpty()) {
-				boolean owned = ownershipStack.pop();
-				if (owned && !infoStack.isEmpty()) {
-					infoStack.pop();
-				}
+			if(!flagCreateHeapArgInfo.get() && !infoStack.isEmpty()) {
+				infoStack.pop();
+				flagCreateHeapArgInfo.set(Boolean.TRUE);
+				System.out.println("Downcall complete popping out the HeapArgInfo structure");
 			}
 		}
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
