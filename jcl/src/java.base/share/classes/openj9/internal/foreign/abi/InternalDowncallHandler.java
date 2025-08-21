@@ -119,17 +119,10 @@ public class InternalDowncallHandler {
 			index += 1;
 		}
 
-		//void clear() {
-			//Arrays.fill(bases, null);
-			//index = 0;
-		//}
-		
-		boolean isFull() {
-			return index >= bases.length;
-		}
 	}
 
-	private final ThreadLocal<Deque<HeapArgInfo>> heapArgInfo;
+	private static final ThreadLocal<Deque<HeapArgInfo>> heapArgInfo = ThreadLocal.withInitial(ArrayDeque::new);
+	private static final ThreadLocal<Deque<Boolean>> frameOwnedByRun = ThreadLocal.withInitial(ArrayDeque::new);
 	/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 	/* The hashtables of sessions/scopes is intended for multithreading in which case
@@ -318,10 +311,17 @@ public class InternalDowncallHandler {
 	private final long memSegmtOfPtrToLongArg(MemorySegment argValue, LinkerOptions options) throws IllegalStateException {
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
 		Deque<HeapArgInfo> infoStack = heapArgInfo.get();
-		HeapArgInfo info = infoStack.peek();
-		System.out.printf("The argLayoutArray Length %d%n", argLayoutArray.length);
-		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
-
+		Deque<Boolean> ownershipStack = frameOwnedByRun.get();
+		HeapArgInfo info;
+		if (ownershipStack.peek() == Boolean.FALSE) {
+			info = new HeapArgInfo(argLayoutArray.length);
+			infoStack.push(info);
+			ownershipStack.pop();
+			ownershipStack.push(Boolean.TRUE);
+		}
+		else {
+			info = infoStack.peek();
+		}
 		try {
 			UpcallMHMetaData.validateNativeArgRetSegmentOfPtr(argValue, options);
 			addMemArgScope(argValue.scope());
@@ -331,8 +331,9 @@ public class InternalDowncallHandler {
 			 * is captured so as to reset the internal index and avoid retaining the references
 			 * to the unreachable objects.
 			 */
-			if (!infoStack.isEmpty()) {
+			if (!ownershipStack.isEmpty() && ownershipStack.peek() == Boolean.TRUE) {
 				infoStack.pop();
+				 ownershipStack.pop();
 			}
 			/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 			throw e;
@@ -341,10 +342,6 @@ public class InternalDowncallHandler {
 		long address = argValue.address();
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
 
-		if (info == null) {
-			info = new HeapArgInfo(argLayoutArray.length);
-			infoStack.push(info);
-		}
 		if (!argValue.isNative() && options.allowsHeapAccess()) {
 			/* Store the heap argument's base object and offset. */
 			AbstractMemorySegmentImpl segment = (AbstractMemorySegmentImpl)argValue;
@@ -378,8 +375,10 @@ public class InternalDowncallHandler {
 			 * to the unreachable objects.
 			 */
 			Deque<HeapArgInfo> infoStack = heapArgInfo.get();
-			if (!infoStack.isEmpty()) {
+			Deque<Boolean> ownershipStack = frameOwnedByRun.get();
+			if (!ownershipStack.isEmpty() && ownershipStack.peek() == Boolean.TRUE) {
 				infoStack.pop();
+				ownershipStack.pop();
 			}
 			/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 			throw e;
@@ -515,7 +514,7 @@ public class InternalDowncallHandler {
 		/*[ENDIF] JAVA_SPEC_VERSION == 17 */
 
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
-		heapArgInfo = ThreadLocal.withInitial(ArrayDeque::new);
+		//heapArgInfo = ThreadLocal.withInitial(ArrayDeque::new);
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 		try {
@@ -849,9 +848,8 @@ public class InternalDowncallHandler {
 	{
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
 		Deque<HeapArgInfo> infoStack = heapArgInfo.get();
-		HeapArgInfo info = new HeapArgInfo(args.length);
-		infoStack.push(info);
-		System.out.printf("The args Length %d%n", args.length);
+		HeapArgInfo info = infoStack.peek();
+		Deque<Boolean> ownershipStack = frameOwnedByRun.get();
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 		/*[IF JAVA_SPEC_VERSION >= 21]*/
@@ -952,13 +950,17 @@ public class InternalDowncallHandler {
 			 * so as to reset the internal index and avoid retaining the references to the
 			 * unreachable objects.
 			 */
-			if (!infoStack.isEmpty()) {
-				infoStack.pop();
+			if (!ownershipStack.isEmpty()) {
+				boolean owned = ownershipStack.pop();
+				if (owned && !infoStack.isEmpty()) {
+					infoStack.pop();
+				}
 			}
 		}
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 		/*[ELSE] JAVA_SPEC_VERSION >= 21 */
 		acquireScope();
+		frameOwnedByRun.get().push(Boolean.FALSE);
 		returnVal = invokeNative(retMemAddr, getValidDowncallMemAddr(downcallAddr), cifNativeThunkAddr, args);
 		releaseScope();
 		/*[ENDIF] JAVA_SPEC_VERSION >= 21 */
