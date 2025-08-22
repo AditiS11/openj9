@@ -311,16 +311,8 @@ public class InternalDowncallHandler {
 	private final long memSegmtOfPtrToLongArg(MemorySegment argValue, LinkerOptions options) throws IllegalStateException {
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
 		Deque<HeapArgInfo> infoStack = heapArgInfo.get();
-		HeapArgInfo info;
-		if (flagCreateHeapArgInfo.get()) {
-			info = new HeapArgInfo(argLayoutArray.length);
-			infoStack.push(info);
-			flagCreateHeapArgInfo.set(Boolean.FALSE);
-			System.out.println("Created a new HeapArgInfo of size " + argLayoutArray.length);
-		}
-		else {
-			info = infoStack.peek();
-		}
+		HeapArgInfo info = infoStack.peek();
+		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 		try {
 			UpcallMHMetaData.validateNativeArgRetSegmentOfPtr(argValue, options);
@@ -341,6 +333,16 @@ public class InternalDowncallHandler {
 
 		long address = argValue.address();
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
+
+		if ((flagCreateHeapArgInfo.get()) || (info == null)) {
+			info = new HeapArgInfo(argLayoutArray.length);
+			infoStack.push(info);
+			flagCreateHeapArgInfo.set(Boolean.FALSE);
+			System.out.println("Created a new HeapArgInfo of size " + argLayoutArray.length);
+		}
+		else {
+			info = infoStack.peek();
+		}
 
 		if (!argValue.isNative() && options.allowsHeapAccess()) {
 			/* Store the heap argument's base object and offset. */
@@ -513,7 +515,6 @@ public class InternalDowncallHandler {
 		/*[ENDIF] JAVA_SPEC_VERSION == 17 */
 
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
-		//heapArgInfo = ThreadLocal.withInitial(ArrayDeque::new);
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 		try {
@@ -845,13 +846,6 @@ public class InternalDowncallHandler {
 	Object runNativeMethod(Addressable downcallAddr, SegmentAllocator segmtAllocator, long[] args) throws IllegalArgumentException, IllegalStateException
 	/*[ENDIF] JAVA_SPEC_VERSION >= 21 */
 	{
-		/*[IF JAVA_SPEC_VERSION >= 22]*/
-		Deque<HeapArgInfo> infoStack = heapArgInfo.get();
-		HeapArgInfo info = infoStack.peek();
-		if (!flagCreateHeapArgInfo.get()) {
-			System.out.println("The call to memSegmtOfPtrToLongArg is completed");
-		}
-		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 
 		/*[IF JAVA_SPEC_VERSION >= 21]*/
 		if (downcallAddr == MemorySegment.NULL)
@@ -896,8 +890,15 @@ public class InternalDowncallHandler {
 
 		long returnVal;
 		/*[IF JAVA_SPEC_VERSION >= 22]*/
-		//Deque<HeapArgInfo> infoStack = heapArgInfo.get();
-		//HeapArgInfo info = infoStack.peek();
+		Deque<HeapArgInfo> infoStack = heapArgInfo.get();
+		HeapArgInfo info = infoStack.peek();
+		if (flagCreateHeapArgInfo.get()) {
+			info = null;
+		}
+		else {
+			info = infoStack.peek();
+			flagCreateHeapArgInfo.set(Boolean.TRUE);
+		}
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 		/* The scope associated with memory specific arguments must be kept alive
 		 * during the downcall since JDK17, including the downcall adddress.
@@ -951,16 +952,14 @@ public class InternalDowncallHandler {
 			 * so as to reset the internal index and avoid retaining the references to the
 			 * unreachable objects.
 			 */
-			if(!flagCreateHeapArgInfo.get() && !infoStack.isEmpty()) {
+			if (!infoStack.isEmpty()) {
 				infoStack.pop();
-				flagCreateHeapArgInfo.set(Boolean.TRUE);
 				System.out.println("Downcall complete popping out the HeapArgInfo structure");
 			}
 		}
 		/*[ENDIF] JAVA_SPEC_VERSION >= 22 */
 		/*[ELSE] JAVA_SPEC_VERSION >= 21 */
 		acquireScope();
-		frameOwnedByRun.get().push(Boolean.FALSE);
 		returnVal = invokeNative(retMemAddr, getValidDowncallMemAddr(downcallAddr), cifNativeThunkAddr, args);
 		releaseScope();
 		/*[ENDIF] JAVA_SPEC_VERSION >= 21 */
