@@ -1137,6 +1137,9 @@ resolveInterfaceMethodRefInto(J9VMThread *vmStruct, J9ConstantPool *ramCP, UDATA
 	bool canRunJavaCode = !jitCompileTimeResolve && J9_ARE_NO_BITS_SET(resolveFlags, J9_RESOLVE_FLAG_REDEFINE_CLASS);
 	bool throwException = canRunJavaCode && J9_ARE_NO_BITS_SET(resolveFlags, J9_RESOLVE_FLAG_NO_THROW_ON_FAIL);
 	UDATA lookupOptions = 0;
+	J9UTF8 *name = NULL;
+	J9UTF8 *sig = NULL;
+	J9Method *resolvedMethod = NULL;
 	if (canRunJavaCode) {
 		if (!throwException) {
 			lookupOptions = J9_LOOK_NO_THROW;
@@ -1177,6 +1180,16 @@ resolveInterfaceMethodRefInto(J9VMThread *vmStruct, J9ConstantPool *ramCP, UDATA
 		lookupOptions |= J9_LOOK_CLCONSTRAINTS;
 	}
 	lookupOptions |= J9_INVOKEINTERFACE;
+	name = J9ROMNAMEANDSIGNATURE_NAME(nameAndSig);
+	sig  = J9ROMNAMEANDSIGNATURE_SIGNATURE(nameAndSig);
+	resolvedMethod = searchClassForMethod(interfaceClass, (U_8*)J9UTF8_DATA(name), J9UTF8_LENGTH(name), (U_8*)J9UTF8_DATA(sig), J9UTF8_LENGTH(sig));
+	if (resolvedMethod) {
+		J9ROMMethod *romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(resolvedMethod);
+		if (J9_ARE_ANY_BITS_SET(romMethod->modifiers, J9AccPrivate)) {
+			 method = resolvedMethod;
+			 goto done;
+		}
+	}
 	method = (J9Method *)javaLookupMethod(vmStruct, interfaceClass, nameAndSig, cpClass, lookupOptions);
 
 	Trc_VM_resolveInterfaceMethodRef_lookupMethod(vmStruct, method);
