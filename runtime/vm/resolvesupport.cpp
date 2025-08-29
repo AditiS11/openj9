@@ -1187,7 +1187,7 @@ resolveInterfaceMethodRefInto(J9VMThread *vmStruct, J9ConstantPool *ramCP, UDATA
 		J9ROMMethod *romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(resolvedMethod);
 		if (J9_ARE_ANY_BITS_SET(romMethod->modifiers, J9AccPrivate)) {
 			 method = resolvedMethod;
-			 returnValue = method
+			 returnValue = method;
 			 goto done;
 		}
 	}
