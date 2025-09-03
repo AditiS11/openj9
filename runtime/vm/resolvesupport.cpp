@@ -1179,18 +1179,19 @@ resolveInterfaceMethodRefInto(J9VMThread *vmStruct, J9ConstantPool *ramCP, UDATA
 		cpClass = J9_CLASS_FROM_CP(ramCP);
 		lookupOptions |= J9_LOOK_CLCONSTRAINTS;
 	}
-	lookupOptions |= J9_INVOKEINTERFACE;
 	name = J9ROMNAMEANDSIGNATURE_NAME(nameAndSig);
 	sig  = J9ROMNAMEANDSIGNATURE_SIGNATURE(nameAndSig);
 	resolvedMethod = searchClassForMethod(interfaceClass, (U_8*)J9UTF8_DATA(name), J9UTF8_LENGTH(name), (U_8*)J9UTF8_DATA(sig), J9UTF8_LENGTH(sig));
-	if (resolvedMethod) {
+
+        if (resolvedMethod) {
 		J9ROMMethod *romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(resolvedMethod);
-		if (J9_ARE_ANY_BITS_SET(romMethod->modifiers, J9AccPrivate)) {
-			 method = resolvedMethod;
-			 returnValue = method;
-			 goto done;
+		if (J9_ARE_ANY_BITS_SET(romMethod->modifiers, J9AccPrivate) && J9_ARE_NO_BITS_SET(romMethod->modifiers, J9AccAbstract)) {
+			method = resolvedMethod;
+			returnValue = resolvedMethod;
+			goto done;
 		}
 	}
+			
 	method = (J9Method *)javaLookupMethod(vmStruct, interfaceClass, nameAndSig, cpClass, lookupOptions);
 
 	Trc_VM_resolveInterfaceMethodRef_lookupMethod(vmStruct, method);
@@ -1215,7 +1216,7 @@ resolveInterfaceMethodRefInto(J9VMThread *vmStruct, J9ConstantPool *ramCP, UDATA
 nonpublic:
 						if (throwException) {
 							setIllegalAccessErrorNonPublicInvokeInterface(vmStruct, method);
-						}
+						}	
 						goto done;
 					}
 					methodIndex = (method - methodClass->ramMethods);
