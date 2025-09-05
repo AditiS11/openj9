@@ -1186,6 +1186,12 @@ resolveInterfaceMethodRefInto(J9VMThread *vmStruct, J9ConstantPool *ramCP, UDATA
         if (resolvedMethod) {
 		J9ROMMethod *romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(resolvedMethod);
 		if (J9_ARE_ANY_BITS_SET(romMethod->modifiers, J9AccPrivate) && J9_ARE_NO_BITS_SET(romMethod->modifiers, J9AccAbstract)) {
+			if (J2SE_VERSION(vm) < J2SE_V11) {
+				if (throwException) {
+					setIllegalAccessErrorNonPublicInvokeInterface(vmStruct, resolvedMethod);
+				}
+				goto done;
+			}
 			method = resolvedMethod;
 			returnValue = resolvedMethod;
 			goto done;
