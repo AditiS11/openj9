@@ -1196,10 +1196,14 @@ resolveInterfaceMethodRefInto(J9VMThread *vmStruct, J9ConstantPool *ramCP, UDATA
 			returnValue = resolvedMethod;
 			goto done;
 		}
+		else {
+			method = (J9Method *)javaLookupMethod(vmStruct, interfaceClass, nameAndSig, cpClass, lookupOptions);
+		}
+	}
+	else {
+		method = (J9Method *)javaLookupMethod(vmStruct, interfaceClass, nameAndSig, cpClass, lookupOptions);
 	}
 			
-	method = (J9Method *)javaLookupMethod(vmStruct, interfaceClass, nameAndSig, cpClass, lookupOptions);
-
 	Trc_VM_resolveInterfaceMethodRef_lookupMethod(vmStruct, method);
 
 	/* If method is NULL, the exception has already been set. */
