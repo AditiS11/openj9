@@ -699,12 +699,23 @@ retry:
 			J9Method * foundMethod = searchClassForMethodCommon(lookupClass, name, nameLength, sig, sigLength, J9_ARE_ANY_BITS_SET(lookupOptions, J9_LOOK_PARTIAL_SIGNATURE));
 
 			if (foundMethod != NULL) {
+				UDATA modifiers = J9_ROM_METHOD_FROM_RAM_METHOD(foundMethod)->modifiers;
+				if (J9_ARE_ANY_BITS_SET(lookupOptions, J9_INVOKEINTERFACE) && J9_ARE_ANY_BITS_SET(modifiers, J9AccPrivate)) {
+					goto nextClass;
+				}
 				resultMethod = processMethod(currentThread, lookupOptions, foundMethod, lookupClass, &exception, &exceptionClass, &errorType, nameAndSig, senderClass, targetClass);
 				if (NULL != currentThread->currentException) {
 					goto end;
 				}
 
 				if (resultMethod == NULL) {
+					if (exception == J9VMCONSTANTPOOL_JAVALANGILLEGALACCESSERROR && J9_ARE_ANY_BITS_SET(lookupOptions, J9_INVOKEINTERFACE)) {
+						lookupOptions &= ~J9_LOOK_NO_THROW;
+						exception = J9VMCONSTANTPOOL_JAVALANGILLEGALACCESSERROR;
+						exceptionClass = targetClass;
+						errorType = J9_VISIBILITY_NON_MODULE_ACCESS_ERROR;
+						goto done;
+					}
 					if (J9VMCONSTANTPOOL_JAVALANGINCOMPATIBLECLASSCHANGEERROR == exception) {
 						/* Incompatible method found - caller may request to ignore this case */
 						if (J9_ARE_ANY_BITS_SET(lookupOptions, J9_LOOK_IGNORE_INCOMPATIBLE_METHODS)) {
