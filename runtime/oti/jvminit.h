@@ -415,6 +415,8 @@ enum INIT_STAGE {
 #define VMOPT_XXNOCPULOADCOMPATIBILITY "-XX:-CpuLoadCompatibility"
 #define VMOPT_XXENABLEEXTENDEDHCR "-XX:+EnableExtendedHCR"
 #define VMOPT_XXDISABLEEXTENDEDHCR "-XX:-EnableExtendedHCR"
+#define VMOPT_XXUSEDEBUGLOCALMAP "-XX:+UseDebugLocalMap"
+#define VMOPT_XXNOUSEDEBUGLOCALMAP "-XX:-UseDebugLocalMap"
 
 #if defined(J9VM_ZOS_3164_INTEROPERABILITY)
 #define VMOPT_XXENABLE3164INTEROPERABILITY "-XX:+Enable3164Interoperability"
@@ -702,6 +704,10 @@ enum INIT_STAGE {
 #define VMOPT_ILLEGAL_ACCESS "--illegal-access="
 #define VMOPT_ENABLE_NATIVE_ACCESS "--enable-native-access"
 #define VMOPT_ILLEGAL_NATIVE_ACCESS "--illegal-native-access="
+#if JAVA_SPEC_VERSION >= 26
+#define VMOPT_ENABLE_FINAL_FIELD_MUTATION "--enable-final-field-mutation"
+#define VMOPT_ILLEGAL_FINAL_FIELD_MUTATION "--illegal-final-field-mutation="
+#endif /* JAVA_SPEC_VERSION >= 26 */
 
 /* JEP 421: Deprecate Finalization for Removal */
 #define VMOPT_DISABLE_FINALIZATION "--finalization="
@@ -742,6 +748,12 @@ enum INIT_STAGE {
 #define SYSPROP_SUN_MISC_UNSAFE_MEMORY_ACCESS "sun.misc.unsafe.memory.access"
 #endif /* JAVA_SPEC_VERSION >= 23 */
 #define SYSPROP_JDK_MODULE_ILLEGALNATIVEACCESS "jdk.module.illegal.native.access"
+#if JAVA_SPEC_VERSION >= 26
+/* Match the system properties in jdk.internal.module.ModuleBootstrap.decodeEnableFinalFieldMutation(). */
+#define SYSPROP_JDK_MODULE_ENABLE_FINAL_FIELD_MUTATION "jdk.module.enable.final.field.mutation."
+/* Match the system properties in jdk.internal.module.ModuleBootstrap.decodeIllegalFinalFieldMutation(). */
+#define SYSPROP_JDK_MODULE_ILLEGAL_FINAL_FIELD_MUTATION "jdk.module.illegal.final.field.mutation"
+#endif /* JAVA_SPEC_VERSION >= 26 */
 #define JAVA_BASE_MODULE "java.base"
 
 #define SYSPROP_COM_SUN_MANAGEMENT "-Dcom.sun.management."

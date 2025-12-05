@@ -160,7 +160,7 @@ public:
 		virtual void visitStackMapNewObject(U_8 slotType, U_16 offset) = 0;
 		virtual void visitStackMapItem(U_8 slotType) = 0;
 #if defined(J9VM_OPT_VALHALLA_STRICT_FIELDS)
-		virtual void visitUnsetField(U_16 cpIndex, U_16 nameIndex) = 0;
+		virtual void visitUnsetField(U_16 nasCpIndex) = 0;
 #endif /* defined(J9VM_OPT_VALHALLA_STRICT_FIELDS) */
 	};
 
@@ -228,9 +228,8 @@ class VerificationTypeInfo
 #if defined(J9VM_OPT_VALHALLA_STRICT_FIELDS)
 		void unsetFieldsDo(VerificationTypeInfoVisitor *visitor) {
 			for (U_16 i = 0; i < _stackMapFrameInfo->numberOfUnsetFields; i++) {
-				U_16 cpIndex = getUnsetFieldIndex(_stackMapFrameInfo->unsetFields + (i * sizeof(U_16)));
-				U_16 nameIndex = (U_16) _classFile->constantPool[cpIndex].slot1;
-				visitor->visitUnsetField(cpIndex, nameIndex);
+				U_16 nasCpIndex = getUnsetFieldIndex(_stackMapFrameInfo->unsetFields + (i * sizeof(U_16)));
+				visitor->visitUnsetField(nasCpIndex);
 			}
 		}
 #endif /* defined(J9VM_OPT_VALHALLA_STRICT_FIELDS) */
@@ -1069,10 +1068,6 @@ class RecordComponentIterator
 		return result;
 	}
 #endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
-#if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
-	bool hasImplicitCreation() const { return _hasImplicitCreationAttribute; }
-	U_16 getImplicitCreationFlags() const { return _implicitCreationFlags; }
-#endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 
 	U_16 getPermittedSubclassesClassNameAtIndex(U_16 index) const {
 		U_16 result = 0;
@@ -1129,7 +1124,6 @@ private:
 #endif /* JAVA_SPEC_VERSION >= 20 */
 #if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
 		NULLRESTRICTED_ANNOTATION,
-		LOOSELYCONSISTENTVALUE_ANNOTATION,
 #endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 		KNOWN_ANNOTATION_COUNT
 	};
@@ -1203,10 +1197,6 @@ private:
 #if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
 	J9CfrAttributeLoadableDescriptors *_loadableDescriptorsAttribute;
 #endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
-#if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
-	bool _hasImplicitCreationAttribute;
-	U_16 _implicitCreationFlags;
-#endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 #if JAVA_SPEC_VERSION >= 11
 	J9CfrAttributeNestMembers *_nestMembers;
 #endif /* JAVA_SPEC_VERSION >= 11 */
@@ -1262,9 +1252,6 @@ private:
 	VMINLINE void markClassNameAsReferenced(U_16 classCPIndex);
 	VMINLINE void markStringAsReferenced(U_16 cpIndex);
 	VMINLINE void markNameAndDescriptorAsReferenced(U_16 nasCPIndex);
-#if defined(J9VM_OPT_VALHALLA_STRICT_FIELDS)
-	VMINLINE void markNameAndDescriptorAsReferencedByEarlyLarvalFrame(U_16 nasCPIndex);
-#endif /* defined(J9VM_OPT_VALHALLA_STRICT_FIELDS) */
 	VMINLINE void markFieldRefAsReferenced(U_16 cpIndex);
 	VMINLINE void markMethodRefAsReferenced(U_16 cpIndex);
 	VMINLINE void markMethodTypeAsReferenced(U_16 cpIndex);

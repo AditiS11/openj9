@@ -99,15 +99,15 @@ VMSnapshotImpl::initBaseClasses()
 	struct J9InternalVMFunctions *vmFuncs = _vm->internalVMFunctions;
 	J9VMThread *vmThread = currentVMThread(_vm);
 
-	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->systemClassLoader, _vm->voidReflectClass);
-	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->systemClassLoader, _vm->booleanReflectClass);
-	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->systemClassLoader, _vm->charReflectClass);
-	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->systemClassLoader, _vm->floatReflectClass);
-	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->systemClassLoader, _vm->doubleReflectClass);
-	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->systemClassLoader, _vm->byteReflectClass);
-	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->systemClassLoader, _vm->shortReflectClass);
-	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->systemClassLoader, _vm->intReflectClass);
-	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->systemClassLoader, _vm->longReflectClass);
+	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->voidReflectClass);
+	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->booleanReflectClass);
+	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->charReflectClass);
+	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->floatReflectClass);
+	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->doubleReflectClass);
+	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->byteReflectClass);
+	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->shortReflectClass);
+	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->intReflectClass);
+	vmFuncs->loadWarmClassFromSnapshot(vmThread, _vm->longReflectClass);
 }
 
 bool
@@ -643,6 +643,11 @@ VMSnapshotImpl::fixupClasses()
 			currentClass->lastITable = (J9ITable *)currentClass->iTable;
 			if (NULL == currentClass->lastITable) {
 				currentClass->lastITable = VMSnapshotImpl::getInvalidITable();
+			}
+			/* Remove dynamic Proxy classes along with unsafe classes. */
+			if (J9ROMCLASS_IS_UNSAFE(romClass)) {
+				J9UTF8 *className = J9ROMCLASS_CLASSNAME(romClass);
+				hashClassTableDelete(classloader, J9UTF8_DATA(className), J9UTF8_LENGTH(className));
 			}
 
 			currentClass = allLiveClassesNextDo(&walkState);

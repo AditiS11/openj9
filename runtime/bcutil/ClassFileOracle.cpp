@@ -230,10 +230,6 @@ ClassFileOracle::ClassFileOracle(BufferManager *bufferManager, J9CfrClassFile *c
 	_hasNonStaticSynchronizedMethod(false),
 	_loadableDescriptorsAttribute(NULL),
 #endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
-#if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
-	_hasImplicitCreationAttribute(false),
-	_implicitCreationFlags(0),
-#endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 	_recordComponentCount(0),
 	_permittedSubclassesAttribute(NULL),
 	_isSealed(false),
@@ -560,9 +556,6 @@ ClassFileOracle::walkAttributes()
 			}
 			knownAnnotations = addAnnotationBit(knownAnnotations, UNMODIFIABLE_ANNOTATION);
 			knownAnnotations = addAnnotationBit(knownAnnotations, VALUEBASED_ANNOTATION);
-#if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
-			knownAnnotations = addAnnotationBit(knownAnnotations, LOOSELYCONSISTENTVALUE_ANNOTATION);
-#endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 			_annotationsAttribute = (J9CfrAttributeRuntimeVisibleAnnotations *)attrib;
 			if (0 == _annotationsAttribute->rawDataLength) {
 				UDATA foundAnnotations = walkAnnotations(_annotationsAttribute->numberOfAnnotations, _annotationsAttribute->annotations, knownAnnotations);
@@ -575,12 +568,6 @@ ClassFileOracle::walkAttributes()
 				if (containsKnownAnnotation(foundAnnotations, VALUEBASED_ANNOTATION)) {
 					_isClassValueBased = true;
 				}
-#if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
-				if (containsKnownAnnotation(foundAnnotations, LOOSELYCONSISTENTVALUE_ANNOTATION)) {
-					_hasImplicitCreationAttribute = true;
-					_implicitCreationFlags |= J9AccImplicitCreateNonAtomic;
-				}
-#endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 			}
 			break;
 		}
@@ -633,13 +620,6 @@ ClassFileOracle::walkAttributes()
 			break;
 		}
 #endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
-#if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
-		case CFR_ATTRIBUTE_ImplicitCreation: {
-			_hasImplicitCreationAttribute = true;
-			_implicitCreationFlags = ((J9CfrAttributeImplicitCreation *)attrib)->implicitCreationFlags;
-			break;
-		}
-#endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 #if JAVA_SPEC_VERSION >= 11
 		case CFR_ATTRIBUTE_NestMembers:
 			/* ignore CFR_ATTRIBUTE_NestMembers for hidden classes, as the nest members never know the name of hidden classes */
@@ -2236,7 +2216,7 @@ ClassFileOracle::walkUnsetFields(U_8 *framePointer, U_16 numberOfUnsetFields)
 	U_16 cpIndex = 0;
 	for (U_16 i = 0; i < numberOfUnsetFields; i++) {
 		NEXT_U16(cpIndex, framePointer);
-		markNameAndDescriptorAsReferencedByEarlyLarvalFrame(cpIndex);
+		markNameAndDescriptorAsReferenced(cpIndex);
 	}
 	return framePointer;
 }
@@ -2425,7 +2405,7 @@ ClassFileOracle::methodIsVirtual(U_16 methodIndex)
 bool
 ClassFileOracle::methodIsNonStaticNonAbstract(U_16 methodIndex)
 {
-	ROMCLASS_VERBOSE_PHASE_HOT(_context, IsMethodNonStaticNonAbstract);
+	ROMCLASS_VERBOSE_PHASE_HOT(_context, MethodIsNonStaticNonAbstract);
 
 	return J9_ARE_NO_BITS_SET(_classFile->methods[methodIndex].accessFlags, (CFR_ACC_STATIC | CFR_ACC_ABSTRACT));
 }
@@ -2615,24 +2595,6 @@ ClassFileOracle::markNameAndDescriptorAsReferenced(U_16 nasCPIndex)
 	markConstantUTF8AsReferenced(_classFile->constantPool[nasCPIndex].slot1); /* Mark name UTF8 */
 	markConstantUTF8AsReferenced(_classFile->constantPool[nasCPIndex].slot2); /* Mark descriptor UTF8 */
 }
-
-#if defined(J9VM_OPT_VALHALLA_STRICT_FIELDS)
-/**
- * Mark name and descriptor as referenced as well
- * used so the strings are saved in the rom class
- * constant pool. They will be used in the verifier.
- */
-void
-ClassFileOracle::markNameAndDescriptorAsReferencedByEarlyLarvalFrame(U_16 nasCPIndex)
-{
-	Trc_BCU_Assert_Equals(CFR_CONSTANT_NameAndType, _classFile->constantPool[nasCPIndex].tag);
-	markConstantNameAndTypeAsReferenced(nasCPIndex);
-	markConstantUTF8AsReferenced(_classFile->constantPool[nasCPIndex].slot1);
-	_constantPoolMap->markConstantAsUsedByEarlyLarvalFrame(_classFile->constantPool[nasCPIndex].slot1);
-	markConstantUTF8AsReferenced(_classFile->constantPool[nasCPIndex].slot2);
-	_constantPoolMap->markConstantAsUsedByEarlyLarvalFrame(_classFile->constantPool[nasCPIndex].slot2);
-}
-#endif /* defined(J9VM_OPT_VALHALLA_STRICT_FIELDS) */
 
 void
 ClassFileOracle::markFieldRefAsReferenced(U_16 cpIndex)

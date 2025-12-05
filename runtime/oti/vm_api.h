@@ -5447,7 +5447,7 @@ typedef struct J9ThreadEnv {
 	intptr_t 		(* set_priority)(omrthread_t thread, uintptr_t priority);
 
 	omrthread_t 	(* self)(void);
-	uintptr_t 		*(* global)(char *name);
+	uintptr_t 		*(* global)(const char *name);
 	intptr_t 		(* attach)(omrthread_t *handle);
 	intptr_t 		(* sleep)(int64_t millis);
 	intptr_t 		(* create)(omrthread_t *handle, uintptr_t stacksize, uintptr_t priority, uintptr_t suspend, omrthread_entrypoint_t entrypoint, void *entryarg);
@@ -5595,11 +5595,10 @@ setInitialVMMethods(J9JavaVM *javaVM, J9Method **cInitialStaticMethod, J9Method 
  * Run class load hooks and assign class object to J9Class.
  *
  * @param vmThread[in] the current VM thread
- * @param classLoader[in] classloader of the J9Class
  * @param clazz[in] J9Class to be loaded
  */
 BOOLEAN
-loadWarmClassFromSnapshot(J9VMThread *vmThread, J9ClassLoader *classLoader, J9Class *clazz);
+loadWarmClassFromSnapshot(J9VMThread *vmThread, J9Class *clazz);
 
 /**
  * Perform post-snapshot fixups on the provided J9Class.

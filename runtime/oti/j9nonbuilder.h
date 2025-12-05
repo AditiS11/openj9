@@ -91,10 +91,7 @@
 #define J9ClassHasIdentity 0x80000
 #define J9ClassEnsureHashed 0x100000
 #define J9ClassHasOffloadAllowSubtasksNatives 0x200000
-/* TODO J9ClassAllowsInitialDefaultValue replaces J9ClassIsPrimitiveValueType for lw5 */
 #define J9ClassIsPrimitiveValueType 0x400000
-#define J9ClassAllowsInitialDefaultValue 0x400000
-#define J9ClassAllowsNonAtomicCreation 0x800000
 #define J9ClassNeedToPruneMemberNames 0x1000000
 #define J9ClassArrayIsNullRestricted 0x2000000
 #define J9ClassIsLoadedFromSnapshot 0x4000000
@@ -280,7 +277,7 @@
 #define J9_ROMCLASS_OPTINFO_LOADABLEDESCRIPTORS_ATTRIBUTE 0x20000
 #endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
 #if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
-#define J9_ROMCLASS_OPTINFO_IMPLICITCREATION_ATTRIBUTE 0x40000
+#define J9_ROMCLASS_OPTINFO_UNUSED_40000 0x40000
 #endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 #define J9_ROMCLASS_OPTINFO_UNUSED_80000 0x80000
 #define J9_ROMCLASS_OPTINFO_UNUSED_100000 0x100000
@@ -2141,7 +2138,7 @@ typedef struct J9TranslationBufferSet {
 typedef struct J9EarlyLarvalFrame {
 	IDATA baseFramePC; /* The only field used to determine equality. */
 	U_16 numberOfUnsetFields;
-	U_16 *unsetFieldCpList;
+	J9ROMNameAndSignature **unsetFieldNASList;
 } J9EarlyLarvalFrame;
 #endif /* defined(J9VM_OPT_VALHALLA_STRICT_FIELDS) */
 
@@ -5499,7 +5496,7 @@ typedef struct J9InternalVMFunctions {
 #if defined(J9VM_OPT_SNAPSHOTS)
 	void (*initializeSnapshotClassLoaderObject)(struct J9JavaVM *javaVM, struct J9ClassLoader *classLoader, j9object_t classLoaderObject);
 	struct J9Class * (*initializeSnapshotClassObject)(struct J9JavaVM *javaVM, struct J9ClassLoader *classLoader, struct J9Class *clazz);
-	BOOLEAN (*loadWarmClassFromSnapshot)(struct J9VMThread *vmThread, struct J9ClassLoader *classLoader, struct J9Class *clazz);
+	BOOLEAN (*loadWarmClassFromSnapshot)(struct J9VMThread *vmThread, struct J9Class *clazz);
 	void (*initializeBaseClasses)(struct J9JavaVM *javaVM);
 #endif /* defined(J9VM_OPT_SNAPSHOTS) */
 #if JAVA_SPEC_VERSION >= 24
@@ -6577,6 +6574,13 @@ typedef struct J9JavaVM {
 #endif /* JAVA_SPEC_VERSION >= 24 */
 	UDATA disclaimableRAMSegmentCount;
 	UDATA disclaimableROMSegmentCount;
+#if defined(OMR_THR_YIELD_ALG)
+	omrthread_t cpuUtilCalcThread;
+	UDATA cpuUtilCacheInterval; /* This is a number of seconds. */
+	int64_t prevProcCPUTime;
+	int64_t prevProcTimestamp;
+	omrthread_monitor_t cpuUtilCacheMutex;
+#endif /* defined(OMR_THR_YIELD_ALG) */
 } J9JavaVM;
 
 #define J9JFR_SAMPLER_STATE_UNINITIALIZED 0

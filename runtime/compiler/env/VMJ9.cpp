@@ -106,6 +106,7 @@
 #include "infra/SimpleRegex.hpp"
 #include "optimizer/Optimizer.hpp"
 #include "optimizer/TransformUtil.hpp"
+#include "ras/Logger.hpp"
 #include "runtime/asmprotos.h"
 #include "runtime/CodeCache.hpp"
 #include "runtime/CodeCacheManager.hpp"
@@ -345,8 +346,6 @@ bool acquireVMaccessIfNeeded(J9VMThread *vmThread, TR_YesNoMaybe isCompThread)
 
             //--- GC CAN INTERVENE HERE ---
 
-            // fprintf(stderr, "Have released class unload monitor temporarily\n"); fflush(stderr);
-
             // At this point we must not hold any JIT monitors that can also be accessed by the GC
             // As we don't know how the GC code will be modified in the future we will
             // scan the entire list of known monitors
@@ -368,14 +367,12 @@ bool acquireVMaccessIfNeeded(J9VMThread *vmThread, TR_YesNoMaybe isCompThread)
             if (hadClassUnloadMonitor)
                {
                TR::MonitorTable::get()->readAcquireClassUnloadMonitor(compInfoPT->getCompThreadId());
-               //fprintf(stderr, "Have acquired class unload monitor again\n"); fflush(stderr);
                }
 
             // Now we can check if the GC has done some unloading or redefinition happened
             if (compInfoPT->compilationShouldBeInterrupted())
                {
                // bail out
-               // fprintf(stderr, "Released classUnloadMonitor and will throw an exception because GC unloaded classes\n"); fflush(stderr);
                //TR::MonitorTable::get()->readReleaseClassUnloadMonitor(0); // Main code should do it.
                // releaseVMAccess(vmThread);
 
@@ -1256,45 +1253,71 @@ TR_J9VMBase::getStaticReferenceFieldAtAddress(uintptr_t fieldAddress)
    return (uintptr_t)J9STATIC_OBJECT_LOAD(vmThread(), NULL, fieldAddress);
    }
 
-TR_J9VMBase::ObjectClassInfo
-TR_J9VMBase::getObjectClassInfoFromObjectReferenceLocation(TR::Compilation *comp,
-                                               uintptr_t objectReferenceLocation)
+TR::KnownObjectTable::ObjectInfo
+TR_J9VMBase::getObjClassInfoFromKnotIndexNoCaching(TR::Compilation *comp, TR::KnownObjectTable::Index knotIndex)
    {
-   // The objectReferenceLocation is required to have come from
-   // KnownObjectTable::getPointerLocation().
+   TR::KnownObjectTable::ObjectInfo retrievedObjInfo;
    TR::KnownObjectTable *knot = comp->getKnownObjectTable();
-   TR_ASSERT_FATAL(knot != NULL, "missing known object table");
+   TR::KnownObjectTable::ObjectInfo existingObjInfo = knot->getObjectInfo(knotIndex);
 
-   TR::KnownObjectTable::Index knownObjectIndex =
-      knot->getExistingIndexAt((uintptr_t*)objectReferenceLocation);
-
-   TR_ASSERT_FATAL(
-      knownObjectIndex != TR::KnownObjectTable::UNKNOWN,
-      "objectReferenceLocation must originate from the known object table");
-
-   TR_J9VMBase::ObjectClassInfo ci = {};
+   // Retrieve the data from the VM
    TR::VMAccessCriticalSection vmAccess(comp);
 
-   uintptr_t objectReference = knot->getPointer(knownObjectIndex);
-   ci.clazz = getObjectClass(objectReference);
-   ci.isString = isString(ci.clazz);
-   ci.jlClass = getClassClassPointer(ci.clazz);
-   ci.isFixedJavaLangClass = (ci.jlClass == ci.clazz);
-   if (ci.isFixedJavaLangClass)
+   uintptr_t objectReference = knot->getPointer(knotIndex);
+   retrievedObjInfo._jniReference = existingObjInfo._jniReference;
+   retrievedObjInfo._clazz = getObjectClass(objectReference);
+   retrievedObjInfo._isString = isString(retrievedObjInfo._clazz);
+   retrievedObjInfo._jlClass = getClassClassPointer(retrievedObjInfo._clazz);
+   retrievedObjInfo._isFixedJavaLangClass = (retrievedObjInfo._jlClass == retrievedObjInfo._clazz);
+   if (retrievedObjInfo._isFixedJavaLangClass)
       {
       // A FixedClass constraint means something different
       // when the class happens to be java/lang/Class.
       // Must add constraints pertaining to the class that
       // the java/lang/Class object represents.
-      ci.clazz = getClassFromJavaLangClass(objectReference);
+      retrievedObjInfo._clazz = getClassFromJavaLangClass(objectReference);
+      }
+   return retrievedObjInfo;
+   }
+
+TR::KnownObjectTable::ObjectInfo
+TR_J9VMBase::getObjClassInfoFromKnotIndex(TR::Compilation *comp, TR::KnownObjectTable::Index knotIndex)
+   {
+   TR::KnownObjectTable *knot = comp->getKnownObjectTable();
+   // Check to see whether the known object entry already holds the desired info.
+   // If so, return the cached version. Otherwise, fetch the info and cache it.
+   TR::KnownObjectTable::ObjectInfo existingObjInfo = knot->getObjectInfo(knotIndex);
+   TR::KnownObjectTable::ObjectInfo answerObjInfo;
+   TR_ASSERT_FATAL(existingObjInfo._jniReference, "The jniReference is missing for knotIndex %d", knotIndex);
+   if (comp->getOption(TR_DisableKnownObjectTableCaching))
+      {
+      answerObjInfo = getObjClassInfoFromKnotIndexNoCaching(comp, knotIndex);
+      }
+   else // Caching is enabled
+      {
+      if (existingObjInfo._clazz == NULL) // Not yet cached
+         {
+         answerObjInfo = getObjClassInfoFromKnotIndexNoCaching(comp, knotIndex);
+         knot->setObjectInfoFields(knotIndex, answerObjInfo); // populate cache
+         }
+      else // Reply with information from the cache
+         {
+         if (comp->getOption(TR_EnableKnownObjectTableCachingVerification))
+            {
+            TR::KnownObjectTable::ObjectInfo retrievedObjInfo = getObjClassInfoFromKnotIndexNoCaching(comp, knotIndex);
+            TR_ASSERT_FATAL(existingObjInfo._clazz == retrievedObjInfo._clazz, "_clazz discrepancy");
+            TR_ASSERT_FATAL(existingObjInfo._jlClass == retrievedObjInfo._jlClass, "_jlClazz discrepancy");
+            TR_ASSERT_FATAL(existingObjInfo._isString == retrievedObjInfo._isString, "_isString discrepancy");
+            TR_ASSERT_FATAL(existingObjInfo._isFixedJavaLangClass == retrievedObjInfo._isFixedJavaLangClass, "_isFixedJavaLangClass discrepancy");
+            TR_ASSERT_FATAL(existingObjInfo._jniReference == retrievedObjInfo._jniReference, "_jniReference discrepancy");
+            }
+         answerObjInfo = existingObjInfo;
+         }
       }
 
-   ci.knownObjectIndex = knownObjectIndex;
-
    J9::ConstProvenanceGraph *cpg = comp->constProvenanceGraph();
-   cpg->addEdge(cpg->knownObject(knownObjectIndex), ci.clazz);
-
-   return ci;
+   cpg->addEdge(cpg->knownObject(knotIndex), answerObjInfo._clazz);
+   return answerObjInfo;
    }
 
 uintptr_t
@@ -2704,8 +2727,6 @@ TR_J9VMBase::markClassForTenuredAlignment(TR::Compilation *comp, TR_OpaqueClassB
 
       hotFieldsWordValue |= (((alignFromStart & 0x7f)/TR::Compiler->om.getObjectAlignmentInBytes()) << 1);
 
-      //printf("Class %p, hotFieldsWordValue %p\n", opclazz,  hotFieldsWordValue);
-
       *(UDATA *)((char *)clazz + offsetOfHotFields()) = hotFieldsWordValue;
       }
    }
@@ -2944,7 +2965,7 @@ TR_J9VMBase::maybeHighlyPolymorphic(TR::Compilation *comp, TR_ResolvedMethod *ca
       if (classOfMethod)
          {
          int len = 1;
-         traceMsg(comp, "maybeHighlyPolymorphic classOfMethod: %s yizhang\n", getClassNameChars(classOfMethod, len));
+         logprintf(comp->getOption(TR_TraceOptDetails), comp->log(), "maybeHighlyPolymorphic classOfMethod: %s yizhang\n", getClassNameChars(classOfMethod, len));
          TR_PersistentCHTable *chTable = comp->getPersistentInfo()->getPersistentCHTable();
          if (chTable->hasThreeOrMoreCompiledImplementors(classOfMethod, cpIndex, caller, comp, warm))
             {
@@ -3528,7 +3549,6 @@ TR_J9VMBase::compilationShouldBeInterrupted(TR::Compilation * comp, TR_CallingCo
    // Update CPU time (update actually happens only every 0.5 seconds)
    if (_compInfoPT->getCompThreadCPU().update()) // returns true if an update happened and metric looks good
       {
-      // We may also want to print it
       if (TR::Options::getCmdLineOptions()->getVerboseOption(TR_VerboseCompilationThreads))
          {
          int32_t CPUmillis = _compInfoPT->getCompThreadCPU().getCpuTime() / 1000000;
@@ -3693,7 +3713,7 @@ TR_J9VMBase::tryToAcquireAccess(TR::Compilation * comp, bool *haveAcquiredVMAcce
 
    if (!hasVMAccess)
       {
-      traceMsg(comp, "tryToAcquireAccess couldn't acquire vm access");
+      logprintf(comp->getOption(TR_TraceOptDetails), comp->log(), "tryToAcquireAccess couldn't acquire vm access");
       }
    return hasVMAccess;
    }
@@ -4468,8 +4488,7 @@ getJ2IThunkSignature(char *invokeHandleSignature, uint32_t signatureLength, int 
    char *resultBuf = (char*)comp->trMemory()->allocateMemory(resultLen, stackAlloc);
    snprintf(resultBuf, resultLen, "(%.*s", lengthToCopy, argsToCopy);
 
-   if (comp->getOption(TR_TraceCG))
-      traceMsg(comp, "JSR292: j2i-thunk signature for %s of '%.*s' is '%s'\n", description, signatureLength, invokeHandleSignature, resultBuf);
+   logprintf(comp->getOption(TR_TraceCG), comp->log(), "JSR292: j2i-thunk signature for %s of '%.*s' is '%s'\n", description, signatureLength, invokeHandleSignature, resultBuf);
    return resultBuf;
    }
 
@@ -4482,8 +4501,9 @@ getEquivalentVirtualCallNode(TR::Node *callNode, int argsToSkip, const char *des
       j2iThunkCall->setChild(i-argsToSkip+1, callNode->getChild(i));
    if (comp->getOption(TR_TraceCG))
       {
-      traceMsg(comp, "JSR292: j2i-thunk call node for %s is %p:\n", description, j2iThunkCall);
-      comp->getDebug()->print(comp->getOutFile(), j2iThunkCall, 2, true);
+      OMR::Logger *log = comp->log();
+      log->printf("JSR292: j2i-thunk call node for %s is %p:\n", description, j2iThunkCall);
+      comp->getDebug()->print(log, j2iThunkCall, 2, true);
       }
    return j2iThunkCall;
    }
@@ -4811,10 +4831,10 @@ TR::KnownObjectTable::Index TR_J9VMBase::mutableCallSiteEpoch(
    if (mh != 0)
       {
       result = knot->getOrCreateIndex(mh);
-      }
 
-   J9::ConstProvenanceGraph *cpg = comp->constProvenanceGraph();
-   cpg->addEdge(cpg->knownObject(mcs), cpg->knownObject(result));
+      J9::ConstProvenanceGraph *cpg = comp->constProvenanceGraph();
+      cpg->addEdge(cpg->knownObject(mcs), cpg->knownObject(result));
+      }
 
    return result;
    }
@@ -4893,6 +4913,8 @@ TR_J9VMBase::targetMethodFromMemberName(uintptr_t memberName)
 TR_OpaqueMethodBlock*
 TR_J9VMBase::targetMethodFromMethodHandle(TR::Compilation* comp, TR::KnownObjectTable::Index objIndex)
    {
+   OMR::Logger *log = comp->log();
+   bool trace = comp->getOption(TR_TraceOptDetails);
    auto knot = comp->getKnownObjectTable();
    if (objIndex != TR::KnownObjectTable::UNKNOWN &&
        knot &&
@@ -4905,8 +4927,7 @@ TR_J9VMBase::targetMethodFromMethodHandle(TR::Compilation* comp, TR::KnownObject
 
       if (mhClass == NULL)
          {
-         if (comp->getOption(TR_TraceOptDetails))
-            traceMsg(comp, "targetMethodFromMethodHandle: MethodHandle is not loaded\n");
+         logprints(trace, log, "targetMethodFromMethodHandle: MethodHandle is not loaded\n");
 
          return NULL;
          }
@@ -4917,15 +4938,7 @@ TR_J9VMBase::targetMethodFromMethodHandle(TR::Compilation* comp, TR::KnownObject
       TR_OpaqueClassBlock *objClass = getObjectClass(handle);
       if (isInstanceOf(objClass, mhClass, true, true) != TR_yes)
          {
-         if (comp->getOption(TR_TraceOptDetails))
-            {
-            traceMsg(
-               comp,
-               "targetMethodFromMethodHandle: Cannot load ((MethodHandle)obj%d).form "
-               "because obj%d is not a MethodHandle\n",
-               objIndex,
-               objIndex);
-            }
+         logprintf(trace, log, "targetMethodFromMethodHandle: Cannot load ((MethodHandle)obj%d).form because obj%d is not a MethodHandle\n", objIndex, objIndex);
 
          return NULL;
          }
@@ -4941,13 +4954,7 @@ TR_J9VMBase::targetMethodFromMethodHandle(TR::Compilation* comp, TR::KnownObject
 
          if (form == 0)
             {
-            if (comp->getOption(TR_TraceOptDetails))
-               {
-               traceMsg(
-                  comp,
-                  "targetMethodFromMethodHandle: null ((MethodHandle)obj%d).form\n",
-                  objIndex);
-               }
+            logprintf(trace, log, "targetMethodFromMethodHandle: null ((MethodHandle)obj%d).form\n", objIndex);
 
             return NULL;
             }
@@ -4957,13 +4964,7 @@ TR_J9VMBase::targetMethodFromMethodHandle(TR::Compilation* comp, TR::KnownObject
 
          if (vmentry == 0)
             {
-            if (comp->getOption(TR_TraceOptDetails))
-               {
-               traceMsg(
-                  comp,
-                  "targetMethodFromMethodHandle: null ((MethodHandle)obj%d).form.vmentry\n",
-                  objIndex);
-               }
+            logprintf(trace, log, "targetMethodFromMethodHandle: null ((MethodHandle)obj%d).form.vmentry\n", objIndex);
 
             return NULL;
             }
@@ -5165,6 +5166,7 @@ TR::KnownObjectTable::Index
 TR_J9VMBase::delegatingMethodHandleTarget(
    TR::Compilation *comp, TR::KnownObjectTable::Index dmhIndex, bool trace)
    {
+   OMR::Logger *log = comp->log();
    TR::KnownObjectTable *knot = comp->getOrCreateKnownObjectTable();
    if (knot == NULL)
       return TR::KnownObjectTable::UNKNOWN;
@@ -5179,20 +5181,11 @@ TR_J9VMBase::delegatingMethodHandleTarget(
    TR_OpaqueClassBlock *cwClass =
       getSystemClassFromClassName(cwClassName, cwClassNameLen);
 
-   if (trace)
-      {
-      traceMsg(
-         comp,
-         "delegating method handle target: delegating mh obj%d(*%p) CountingWrapper %p\n",
-         dmhIndex,
-         knot->getPointerLocation(dmhIndex),
-         cwClass);
-      }
+   logprintf(trace, log, "delegating method handle target: delegating mh obj%d(*%p) CountingWrapper %p\n", dmhIndex, knot->getPointerLocation(dmhIndex), cwClass);
 
    if (cwClass == NULL)
       {
-      if (trace)
-         traceMsg(comp, "failed to find CountingWrapper\n");
+      logprints(trace, log, "failed to find CountingWrapper\n");
 
       return TR::KnownObjectTable::UNKNOWN;
       }
@@ -5202,16 +5195,14 @@ TR_J9VMBase::delegatingMethodHandleTarget(
 
    if (isInstanceOf(dmhType, cwClass, true) != TR_yes)
       {
-      if (trace)
-         traceMsg(comp, "object is not a CountingWrapper\n");
+      logprints(trace, log, "object is not a CountingWrapper\n");
 
       return TR::KnownObjectTable::UNKNOWN;
       }
 
    TR::KnownObjectTable::Index targetIndex = delegatingMethodHandleTargetHelper(comp, dmhIndex, cwClass);
 
-   if (trace)
-      traceMsg(comp, "target is obj%d\n", targetIndex);
+   logprintf(trace, log, "target is obj%d\n", targetIndex);
 
    J9::ConstProvenanceGraph *cpg = comp->constProvenanceGraph();
    cpg->addEdge(cpg->knownObject(dmhIndex), cpg->knownObject(targetIndex));
@@ -5288,8 +5279,7 @@ TR_J9VMBase::getLayoutVarHandle(TR::Compilation *comp, TR::KnownObjectTable::Ind
    if (layoutClass == NULL ||
        isInstanceOf(layoutObjClass, layoutClass, true, true) != TR_yes)
       {
-      if (comp->getOption(TR_TraceOptDetails))
-         traceMsg(comp, "getLayoutVarHandle: failed ValueLayouts$AbstractValueLayout type check.\n");
+      logprintf(comp->getOption(TR_TraceOptDetails), comp->log(), "getLayoutVarHandle: failed ValueLayouts$AbstractValueLayout type check.\n");
       return result;
       }
 
@@ -5324,8 +5314,8 @@ TR_J9VMBase::getVarHandleAccessDescriptorMode(TR::Compilation *comp, TR::KnownOb
    if (adClass == NULL ||
        isInstanceOf(adObjClass, adClass, true, true) != TR_yes)
       {
-      if (comp->getOption(TR_TraceOptDetails))
-         traceMsg(comp, "getVarHandleAccessDescriptorMode: failed java/lang/invoke/VarHandle$AccessDescriptor type check.\n");
+      logprints(comp->getOption(TR_TraceOptDetails), comp->log(),
+            "getVarHandleAccessDescriptorMode: failed java/lang/invoke/VarHandle$AccessDescriptor type check.\n");
       return -1;
       }
 
@@ -5852,13 +5842,14 @@ TR_J9VMBase::reserveTrampolineIfNecessary(TR::Compilation * comp, TR::SymbolRefe
 #if 0
       if (isAOT_DEPRECATED_DO_NOT_USE() && (comp->getOption(TR_TraceRelocatableDataCG) || comp->getOption(TR_TraceRelocatableDataDetailsCG)) )
          {
-          traceMsg(comp, "<relocatableDataTrampolinesCG>\n");
-          traceMsg(comp, "%s\n", comp->signature());
-          traceMsg(comp, "%-8s", "cpIndex");
-          traceMsg(comp, "cp\n");
-          traceMsg(comp, "%-8x", cpIndex);
-          traceMsg(comp, "%x\n", cp);
-          traceMsg(comp, "</relocatableDataTrampolinesCG>\n");
+          OMR::Logger *log = comp->log();
+          log->prints("<relocatableDataTrampolinesCG>\n");
+          log->printf("%s\n", comp->signature());
+          log->printf("%-8s", "cpIndex");
+          log->prints("cp\n");
+          log->printf("%-8x", cpIndex);
+          log->printf("%x\n", cp);
+          log->prints("</relocatableDataTrampolinesCG>\n");
          }
 #endif
 
@@ -6611,8 +6602,7 @@ int TR_J9VMBase::findOrCreateMethodSymRef(TR::Compilation *comp, TR::ResolvedMet
                                                   comp->getCurrentMethod());
    if (!c)
       {
-      if (comp->getOption(TR_TraceILGen))
-         traceMsg(comp, "class %s not found\n", classSig);
+      logprintf(comp->getOption(TR_TraceILGen), comp->log(), "class %s not found\n", classSig);
       return 0;
       }
 
@@ -7684,6 +7674,8 @@ TR_J9VM::transformJavaLangClassIsArrayOrIsPrimitive(TR::Compilation * comp, TR::
 TR::Node *
 TR_J9VM::inlineNativeCall(TR::Compilation * comp, TR::TreeTop * callNodeTreeTop, TR::Node * callNode)
    {
+   OMR::Logger *log = comp->log();
+
    // Returning NULL from this method signifies that the call must be prepared for a direct JNI call.
    // In some cases, the method call is not inlined, but the original call node is returned by this
    // method, signifying that no special preparation is required for a direct JNI call.
@@ -7746,16 +7738,16 @@ TR_J9VM::inlineNativeCall(TR::Compilation * comp, TR::TreeTop * callNodeTreeTop,
          if (  comp->cg()->supportsInliningOfIsInstance()
             && performTransformation(comp, "O^O inlineNativeCall: generate instanceof [%p] for Class.isInstance at bytecode %d\n", callNode, callNode->getByteCodeInfo().getByteCodeIndex()) )
             {
-            if (comp->getOption(TR_TraceILGen) && comp->getDebug())
+            if (comp->getOption(TR_TraceILGen))
                {
                TR_BitVector nodeChecklistBeforeDump(comp->getNodeCount(), comp->trMemory(), stackAlloc, growable);
-               traceMsg(comp, "   /--- Class.isInstance call tree --\n");
+               log->prints("   /--- Class.isInstance call tree --\n");
 
                comp->getDebug()->saveNodeChecklist(nodeChecklistBeforeDump);
-               comp->getDebug()->dumpSingleTreeWithInstrs(callNodeTreeTop, NULL, true, false, true, false);
+               comp->getDebug()->dumpSingleTreeWithInstrs(log, callNodeTreeTop, NULL, true, false, true, false);
                comp->getDebug()->restoreNodeChecklist(nodeChecklistBeforeDump);
 
-               traceMsg(comp, "\n");
+               log->println();
                }
 
             TR_ASSERT(!callNode->getOpCode().isIndirect(), "Expecting direct call to Class.isInstance");
@@ -7992,7 +7984,7 @@ TR_J9VM::inlineNativeCall(TR::Compilation * comp, TR::TreeTop * callNodeTreeTop,
          else if (!comp->getOption(TR_DisableRecognizeCurrentThread) && !notInlineCurrentThread)
             {
             if (comp->getOption(TR_TraceOptDetails) || comp->getOption(TR_TraceILGen))
-               traceMsg(comp, "Inline Thread.currentThread() callNode n%dn 0x%p\n", callNode->getGlobalIndex(), callNode);
+               log->printf("Inline Thread.currentThread() callNode n%dn 0x%p\n", callNode->getGlobalIndex(), callNode);
 
             comp->cg()->setInlinedGetCurrentThreadMethod();
             TR::Node::recreate(callNode, TR::aload);
@@ -8311,7 +8303,6 @@ TR_J9VM::inlineNativeCall(TR::Compilation * comp, TR::TreeTop * callNodeTreeTop,
       case TR::java_lang_J9VMInternals_getSuperclass:
          {
          TR_OpaqueClassBlock *jitHelpersClass = comp->getJITHelpersClassPointer();
-         ///traceMsg(comp, "jithelpersclass = %p\n", jitHelpersClass);
          if (jitHelpersClass && isClassInitialized(jitHelpersClass))
             {
             // fish for the getSuperclass method in JITHelpers
@@ -8361,7 +8352,6 @@ TR_J9VM::inlineNativeCall(TR::Compilation * comp, TR::TreeTop * callNodeTreeTop,
                //callNode->setAndIncChild(0, vftLoad);
                callNode->setAndIncChild(0, helpersCallNode);
                callNode->setAndIncChild(1, firstChild);
-               ///traceMsg(comp, "replaced call node for getSuperclass at node = %p\n", callNode);
                callNode->setSymbolReference(getSuperclassSymRef);
                }
             }
@@ -8676,7 +8666,6 @@ TR_J9VM::getClassClassPointer(TR_OpaqueClassBlock *objectClassPointer)
    {
    TR::VMAccessCriticalSection getClassClassPointer(this);
    J9Class *j9class;
-   j9class = TR::Compiler->cls.convertClassOffsetToClassPtr(objectClassPointer);
 
    void *javaLangClass = J9VM_J9CLASS_TO_HEAPCLASS(TR::Compiler->cls.convertClassOffsetToClassPtr(objectClassPointer));
 

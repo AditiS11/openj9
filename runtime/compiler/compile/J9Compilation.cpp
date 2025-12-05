@@ -59,6 +59,7 @@
 #include "optimizer/OptimizationManager.hpp"
 #include "optimizer/Optimizer.hpp"
 #include "optimizer/TransformUtil.hpp"
+#include "ras/Logger.hpp"
 #include "runtime/RuntimeAssumptions.hpp"
 #include "runtime/J9Profiler.hpp"
 #include "OMR/Bytes.hpp"
@@ -154,6 +155,8 @@ J9::Compilation::Compilation(int32_t id,
       TR::Environment *target
 #if defined(J9VM_OPT_JITSERVER)
       , size_t numPermanentLoaders
+      , bool isRemoteCompilation
+      , JITServer::ServerStream *stream
 #endif
       )
    : OMR::CompilationConnector(
@@ -199,10 +202,10 @@ J9::Compilation::Compilation(int32_t id,
    _skippedJProfilingBlock(false),
    _reloRuntime(reloRuntime),
 #if defined(J9VM_OPT_JITSERVER)
-   _remoteCompilation(false),
+   _remoteCompilation(isRemoteCompilation),
    _serializedRuntimeAssumptions(getTypedAllocator<SerializedRuntimeAssumption *>(self()->allocator())),
    _clientData(NULL),
-   _stream(NULL),
+   _stream(stream),
    _globalMemory(*::trPersistentMemory, heapMemoryRegion),
    _perClientMemory(_trMemory),
    _methodsRequiringTrampolines(getTypedAllocator<TR_OpaqueMethodBlock *>(self()->allocator())),
@@ -657,6 +660,8 @@ J9::Compilation::canAllocateInlineClass(TR_OpaqueClassBlock *block)
 int32_t
 J9::Compilation::canAllocateInline(TR::Node* node, TR_OpaqueClassBlock* &classInfo)
    {
+   OMR::Logger *log = self()->log();
+   bool trace = self()->getOption(TR_TraceCG);
 
    // Can't skip the allocation if we are generating JVMPI hooks, since
    // JVMPI needs to know about the allocation.
@@ -736,10 +741,8 @@ J9::Compilation::canAllocateInline(TR::Node* node, TR_OpaqueClassBlock* &classIn
          classInfo = NULL;
          if (areValueTypesEnabled)
             {
-            if (self()->getOption(TR_TraceCG))
-               {
-               traceMsg(self(), "cannot inline array allocation @ node %p because value types are enabled\n", node);
-               }
+            logprintf(trace, log, "cannot inline array allocation @ node %p because value types are enabled\n", node);
+
             const char *signature = self()->signature();
 
             TR::DebugCounter::incStaticDebugCounter(self(), TR::DebugCounter::debugCounterName(self(), "inlineAllocation/dynamicArray/failed/valueTypes/(%s)", signature));
@@ -796,19 +799,16 @@ J9::Compilation::canAllocateInline(TR::Node* node, TR_OpaqueClassBlock* &classIn
 
    if (TR::Compiler->om.useHybridArraylets() && TR::Compiler->om.isDiscontiguousArray(size))
       {
-      if (self()->getOption(TR_TraceCG))
-         traceMsg(self(), "cannot inline array allocation @ node %p because size %d is discontiguous\n", node, size);
+      logprintf(trace, log, "cannot inline array allocation @ node %p because size %d is discontiguous\n", node, size);
       return -1;
       }
    else if (!isRealTimeGC && size == 0)
       {
 #if (defined(TR_HOST_S390) && defined(TR_TARGET_S390)) || (defined(TR_TARGET_X86) && defined(TR_HOST_X86)) || (defined(TR_TARGET_POWER) && defined(TR_HOST_POWER)) || (defined(TR_TARGET_ARM64) && defined(TR_HOST_ARM64))
       size = TR::Compiler->om.discontiguousArrayHeaderSizeInBytes();
-      if (self()->getOption(TR_TraceCG))
-         traceMsg(self(), "inline array allocation @ node %p for size 0\n", node);
+      logprintf(trace, log, "inline array allocation @ node %p for size 0\n", node);
 #else
-      if (self()->getOption(TR_TraceCG))
-         traceMsg(self(), "cannot inline array allocation @ node %p because size 0 is discontiguous\n", node);
+      logprintf(trace, log, "cannot inline array allocation @ node %p because size 0 is discontiguous\n", node);
       return -1;
 #endif
       }
@@ -853,22 +853,9 @@ J9::Compilation::freeKnownObjectTable()
    {
    if (_knownObjectTable)
       {
-#if defined(J9VM_OPT_JITSERVER)
-      if (!isOutOfProcessCompilation())
-#endif /* defined(J9VM_OPT_JITSERVER) */
-         {
-         TR::VMAccessCriticalSection freeKnownObjectTable(self()->fej9());
-
-         J9VMThread *thread = self()->fej9()->vmThread();
-         TR_ASSERT(thread, "assertion failure");
-
-         TR_ArrayIterator<uintptr_t> i(&_knownObjectTable->_references);
-         for (uintptr_t *ref = i.getFirst(); !i.pastEnd(); ref = i.getNext())
-            thread->javaVM->internalVMFunctions->j9jni_deleteLocalRef((JNIEnv*)thread, (jobject)ref);
-         }
+      _knownObjectTable->freeKnownObjectTable();
+      _knownObjectTable = NULL;
       }
-
-   _knownObjectTable = NULL;
    }
 
 
@@ -1789,7 +1776,7 @@ J9::Compilation::addKeepaliveClass(TR_OpaqueClassBlock *c)
       {
       int32_t len;
       const char *name = TR::Compiler->cls.classNameChars(self(), c, len);
-      traceMsg(self(), "Added global keepalive class %p %.*s\n", c, len, name);
+      self()->log()->printf("Added global keepalive class %p %.*s\n", c, len, name);
       }
    }
 

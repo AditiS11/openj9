@@ -739,11 +739,30 @@ threadParseArguments(J9JavaVM *vm, char *optArg)
 
 
 #if defined(OMR_THR_YIELD_ALG)
-	**(UDATA **)omrthread_global((char *)"parkPolicy") = 0;
+#if defined(J9VM_ARCH_X86) || defined(J9VM_ARCH_POWER) || defined(J9VM_ARCH_S390)
+	**(UDATA **)omrthread_global((char *)"parkPolicy") = OMRTHREAD_PARK_POLICY_SLEEP;
+#else /* defined(J9VM_ARCH_X86) || defined(J9VM_ARCH_POWER) || defined(J9VM_ARCH_S390) */
+	**(UDATA **)omrthread_global((char *)"parkPolicy") = OMRTHREAD_PARK_POLICY_NONE;
+#endif /* defined(J9VM_ARCH_X86) || defined(J9VM_ARCH_POWER) || defined(J9VM_ARCH_S390) */
 	**(UDATA **)omrthread_global((char *)"parkSleepMultiplier") = 0;
-	**(UDATA **)omrthread_global((char *)"parkSleepTime") = 0;
 	**(UDATA **)omrthread_global((char *)"parkSpinCount") = 0;
-	**(UDATA **)omrthread_global((char *)"parkSleepCount") = 0;
+	**(UDATA **)omrthread_global((char *)"parkSleepCount") = 2;
+
+#if defined(J9VM_ARCH_POWER)
+	**(UDATA **)omrthread_global((char *)"parkSleepCpuUtilThreshold") = 99;
+	**(UDATA **)omrthread_global((char *)"parkSleepTime") = 400;
+#elif defined(J9VM_ARCH_X86) /* defined(OMR_ARCH_POWER) */
+	**(UDATA **)omrthread_global((char *)"parkSleepCpuUtilThreshold") = 80;
+	**(UDATA **)omrthread_global((char *)"parkSleepTime") = 400;
+#elif defined(J9VM_ARCH_S390) /* defined(OMR_ARCH_X86) */
+	**(UDATA **)omrthread_global((char *)"parkSleepCpuUtilThreshold") = 99;
+	**(UDATA **)omrthread_global((char *)"parkSleepTime") = 100;
+#else /* defined(J9VM_ARCH_S390) */
+	**(UDATA **)omrthread_global((char *)"parkSleepCpuUtilThreshold") = 100;
+	**(UDATA **)omrthread_global((char *)"parkSleepTime") = 0;
+#endif /* defined(J9VM_ARCH_POWER) */
+
+	vm->cpuUtilCacheInterval = 5;
 #endif /* defined(OMR_THR_YIELD_ALG) */
 
 	/* parse arguments */
@@ -1350,6 +1369,24 @@ threadParseArguments(J9JavaVM *vm, char *optArg)
 				goto _error;
 			}
 			**(UDATA **)omrthread_global((char *)"parkSleepCount") = parkSleepCount;
+			continue;
+		}
+
+		if (try_scan(&scan_start, "cpuUtilCacheInterval=")) {
+			UDATA cacheInterval = 0;
+			if (scan_udata(&scan_start, &cacheInterval)) {
+				goto _error;
+			}
+			vm->cpuUtilCacheInterval = cacheInterval;
+			continue;
+		}
+
+		if (try_scan(&scan_start, "parkSleepCpuUtilThreshold=")) {
+			UDATA threshold = 0;
+			if (scan_udata(&scan_start, &threshold)) {
+				goto _error;
+			}
+			**(UDATA **)omrthread_global((char *)"parkSleepCpuUtilThreshold") = threshold;
 			continue;
 		}
 #endif /* defined(OMR_THR_YIELD_ALG) */

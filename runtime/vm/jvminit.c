@@ -718,6 +718,11 @@ freeJavaVM(J9JavaVM * vm)
 			omrthread_monitor_destroy(vm->globalHotFieldPoolMutex);
 		}
 	}
+#if defined(OMR_THR_YIELD_ALG)
+	if (NULL != vm->cpuUtilCacheMutex) {
+		omrthread_monitor_destroy(vm->cpuUtilCacheMutex);
+	}
+#endif /* defined(OMR_THR_YIELD_ALG) */
 
 	if (NULL != vm->classMemorySegments) {
 		J9ClassWalkState classWalkState;
@@ -3267,8 +3272,8 @@ static BOOLEAN
 isEmpty(const char * str)
 {
 	BOOLEAN isEmpty = TRUE;
-	while('\0' != *str) {
-		if (0 == isspace((unsigned char) *str)) {
+	while ('\0' != *str) {
+		if (0 == OMR_ISSPACE(*str)) {
 			isEmpty = FALSE;
 			break;
 		}
@@ -4466,6 +4471,16 @@ processVMArgsFromFirstToLast(J9JavaVM * vm)
 			vm->extendedRuntimeFlags3 |= J9_EXTENDED_RUNTIME3_CACHE_MAPS;
 		} else if (cacheMaps < noCacheMaps) {
 			vm->extendedRuntimeFlags3 &= ~J9_EXTENDED_RUNTIME3_CACHE_MAPS;
+		}
+	}
+
+	{
+		IDATA useDebugLocalMap = FIND_AND_CONSUME_VMARG(EXACT_MATCH, VMOPT_XXUSEDEBUGLOCALMAP, NULL);
+		IDATA noUseDebugLocalMap = FIND_AND_CONSUME_VMARG(EXACT_MATCH, VMOPT_XXNOUSEDEBUGLOCALMAP, NULL);
+		if (useDebugLocalMap > noUseDebugLocalMap) {
+			vm->extendedRuntimeFlags3 |= J9_EXTENDED_RUNTIME3_USE_DEBUG_LOCAL_MAP;
+		} else if (useDebugLocalMap < noUseDebugLocalMap) {
+			vm->extendedRuntimeFlags3 &= ~J9_EXTENDED_RUNTIME3_USE_DEBUG_LOCAL_MAP;
 		}
 	}
 
@@ -7822,6 +7837,9 @@ protectedInitializeJavaVM(J9PortLibrary* portLibrary, void * userData)
 		}
 	}
 #endif /* defined(J9VM_OPT_JFR) */
+#if defined(OMR_THR_YIELD_ALG)
+	omrthread_monitor_init_with_name(&vm->cpuUtilCacheMutex, 0, "CPU Utilization Cache Mutex");
+#endif /* defined(OMR_THR_YIELD_ALG) */
 
 	if (JNI_OK != (stageRC = runInitializationStage(vm, ALL_VM_ARGS_CONSUMED))) {
 		goto error;
@@ -7962,6 +7980,10 @@ protectedInitializeJavaVM(J9PortLibrary* portLibrary, void * userData)
 		}
 	}
 #endif
+
+	if (J9_ARE_ANY_BITS_SET(vm->extendedRuntimeFlags3, J9_EXTENDED_RUNTIME3_USE_DEBUG_LOCAL_MAP)) {
+		installDebugLocalMapper(vm);
+	}
 
 	initializeInitialMethods(vm);
 

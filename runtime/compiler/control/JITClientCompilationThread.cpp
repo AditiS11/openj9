@@ -203,47 +203,16 @@ handler_IProfiler_profilingSample(JITServer::ClientStream *client, TR_J9VM *fe, 
    }
 
 static bool
-handleServerMessage(JITServer::ClientStream *client, TR_J9VM *fe, JITServer::MessageType &response)
+handleResponse(JITServer::MessageType response, JITServer::ClientStream *client, TR::CompilationInfoPerThread *compInfoPT, TR::Compilation *comp, TR_J9VM *fe, J9VMThread *vmThread)
    {
    using JITServer::MessageType;
-   TR::CompilationInfoPerThread *compInfoPT = fe->_compInfoPT;
-   J9VMThread *vmThread = compInfoPT->getCompilationThread();
-   TR_Memory  *trMemory = compInfoPT->getCompilation()->trMemory();
-   TR::Compilation *comp = compInfoPT->getCompilation();
+
    TR::CompilationInfo *compInfo = compInfoPT->getCompilationInfo();
-
-   TR_ASSERT(TR::MonitorTable::get()->getClassUnloadMonitorHoldCount(compInfoPT->getCompThreadId()) == 0, "Must not hold classUnloadMonitor");
-   TR::MonitorTable *table = TR::MonitorTable::get();
-   TR_ASSERT(table && table->isThreadInSafeMonitorState(vmThread), "Must not hold any monitors when waiting for server");
-
-   response = client->read();
-
-   // Acquire VM access and check for possible class unloading
-   acquireVMAccessNoSuspend(vmThread);
-
-   // If JVM has unloaded classes inform the server to abort this compilation
-   uint8_t interruptReason = compInfoPT->compilationShouldBeInterrupted();
-   if (interruptReason && response != MessageType::jitDumpPrintIL)
-      {
-      // Inform the server if compilation is not yet complete
-      if ((response != MessageType::compilationCode) &&
-          (response != MessageType::compilationFailure) &&
-          (response != MessageType::AOTCache_serializedAOTMethod) &&
-          (response != MessageType::AOTCache_storedAOTMethod) &&
-          (response != MessageType::AOTCache_failure))
-         client->writeError(JITServer::MessageType::compilationInterrupted, 0 /* placeholder */);
-
-      if (TR::Options::isAnyVerboseOptionSet(TR_VerboseJITServer, TR_VerboseCompilationDispatch))
-         TR_VerboseLog::writeLineLocked(TR_Vlog_FAILURE, "Interrupting remote compilation (interruptReason %u) in handleServerMessage(%s) for %s @ %s",
-                                                          interruptReason, JITServer::messageNames[response], comp->signature(), comp->getHotnessName());
-
-      Trc_JITServerInterruptRemoteCompile(vmThread, interruptReason, JITServer::messageNames[response], comp->signature(), comp->getHotnessName());
-      comp->failCompilation<TR::CompilationInterrupted>("Compilation interrupted in handleServerMessage");
-      }
-
+   TR_Memory *trMemory = comp->trMemory();
    TR::KnownObjectTable *knot = comp->getOrCreateKnownObjectTable();
 
    bool done = false;
+
    switch (response)
       {
       case MessageType::compilationCode:
@@ -663,14 +632,12 @@ handleServerMessage(JITServer::ClientStream *client, TR_J9VM *fe, JITServer::Mes
          client->write(response, result, isJL);
          }
          break;
-      case MessageType::VM_getObjectClassInfoFromObjectReferenceLocation:
+      case MessageType::VM_getObjectClassInfoFromKnotIndex:
          {
-         auto recv = client->getRecvData<uintptr_t>();
-         uintptr_t objectReferenceLocation = std::get<0>(recv);
-         auto ci = fe->getObjectClassInfoFromObjectReferenceLocation(comp, objectReferenceLocation);
-         client->write(response,
-                       ci,
-                       knot->getPointerLocation(ci.knownObjectIndex));
+         auto recv = client->getRecvData<TR::KnownObjectTable::Index>();
+         TR::KnownObjectTable::Index knotIndex = std::get<0>(recv);
+         TR::KnownObjectTable::ObjectInfo objInfo = fe->getObjClassInfoFromKnotIndex(comp, knotIndex);
+         client->write(response, objInfo);
          }
          break;
       case MessageType::VM_stackWalkerMaySkipFrames:
@@ -2781,39 +2748,11 @@ handleServerMessage(JITServer::ClientStream *client, TR_J9VM *fe, JITServer::Mes
                           std::string((char*) bodyInfo->getMethodInfo(), sizeof(TR_PersistentMethodInfo)));
          }
          break;
-      case MessageType::KnownObjectTable_getOrCreateIndex:
-         {
-         uintptr_t objectPointer = std::get<0>(client->getRecvData<uintptr_t>());
-         TR::KnownObjectTable::Index index = TR::KnownObjectTable::UNKNOWN;
-         uintptr_t *objectPointerReference = NULL;
-
-            {
-            TR::VMAccessCriticalSection knownObjectTableGetIndex(fe);
-            index = knot->getOrCreateIndex(objectPointer);
-            objectPointerReference = knot->getPointerLocation(index);
-            }
-
-         client->write(response, index, objectPointerReference);
-         }
-         break;
       case MessageType::KnownObjectTable_getOrCreateIndexAt:
          {
          uintptr_t *objectPointerReferenceServerQuery = std::get<0>(client->getRecvData<uintptr_t*>());
          TR::KnownObjectTable::Index index = knot->getOrCreateIndexAt(objectPointerReferenceServerQuery);
          client->write(response, index, knot->getPointerLocation(index));
-         }
-         break;
-      case MessageType::KnownObjectTable_getPointer:
-         {
-         TR::KnownObjectTable::Index knotIndex = std::get<0>(client->getRecvData<TR::KnownObjectTable::Index>());
-         uintptr_t objectPointer = 0;
-
-            {
-            TR::VMAccessCriticalSection knownObjectTableGetPointer(fe);
-            objectPointer = knot->getPointer(knotIndex);
-            }
-
-         client->write(response, objectPointer);
          }
          break;
       case MessageType::KnownObjectTable_getExistingIndexAt:
@@ -3109,6 +3048,69 @@ handleServerMessage(JITServer::ClientStream *client, TR_J9VM *fe, JITServer::Mes
       default:
          // It is vital that this remains a hard error during dev!
          TR_ASSERT(false, "JITServer: handleServerMessage received an unknown message type: %d\n", response);
+      }
+
+   return done;
+   }
+
+static bool
+handleServerMessage(JITServer::ClientStream *client, TR_J9VM *fe, JITServer::MessageType &response)
+   {
+   using JITServer::MessageType;
+   TR::CompilationInfoPerThread *compInfoPT = fe->_compInfoPT;
+   J9VMThread *vmThread = compInfoPT->getCompilationThread();
+   TR::Compilation *comp = compInfoPT->getCompilation();
+
+   TR_ASSERT(TR::MonitorTable::get()->getClassUnloadMonitorHoldCount(compInfoPT->getCompThreadId()) == 0, "Must not hold classUnloadMonitor");
+   TR::MonitorTable *table = TR::MonitorTable::get();
+   TR_ASSERT(table && table->isThreadInSafeMonitorState(vmThread), "Must not hold any monitors when waiting for server");
+
+   response = client->read();
+
+   // Acquire VM access and check for possible class unloading
+   acquireVMAccessNoSuspend(vmThread);
+
+   // If JVM has unloaded classes inform the server to abort this compilation
+   uint8_t interruptReason = compInfoPT->compilationShouldBeInterrupted();
+   if (interruptReason && response != MessageType::jitDumpPrintIL)
+      {
+      // Inform the server if compilation is not yet complete
+      if ((response != MessageType::compilationCode) &&
+          (response != MessageType::compilationFailure) &&
+          (response != MessageType::AOTCache_serializedAOTMethod) &&
+          (response != MessageType::AOTCache_storedAOTMethod) &&
+          (response != MessageType::AOTCache_failure))
+         client->writeError(MessageType::compilationInterrupted, 0 /* placeholder */);
+
+      if (TR::Options::isAnyVerboseOptionSet(TR_VerboseJITServer, TR_VerboseCompilationDispatch))
+         TR_VerboseLog::writeLineLocked(TR_Vlog_FAILURE, "Interrupting remote compilation (interruptReason %u) in handleServerMessage(%s) for %s @ %s",
+                                                          interruptReason, JITServer::messageNames[response], comp->signature(), comp->getHotnessName());
+
+      Trc_JITServerInterruptRemoteCompile(vmThread, interruptReason, JITServer::messageNames[response], comp->signature(), comp->getHotnessName());
+      comp->failCompilation<TR::CompilationInterrupted>("Compilation interrupted in handleServerMessage");
+      }
+
+   bool done = false;
+   try
+      {
+      done = handleResponse(response, client, compInfoPT, comp, fe, vmThread);
+      }
+   catch(std::exception &e)
+      {
+      interruptReason = COMP_EXCEPTION_THROWN;
+      compInfoPT->setCompilationShouldBeInterrupted(interruptReason);
+
+      client->writeError(MessageType::compilationInterrupted, 0 /* placeholder */);
+
+      if (TR::Options::isAnyVerboseOptionSet(TR_VerboseJITServer, TR_VerboseCompilationDispatch))
+         TR_VerboseLog::writeLineLocked(TR_Vlog_FAILURE, "Interrupting remote compilation (%s) in handleServerMessage(%s) for %s @ %s",
+                                                          e.what(), JITServer::messageNames[response], comp->signature(), comp->getHotnessName());
+
+      Trc_JITServerInterruptRemoteCompile(vmThread, interruptReason, JITServer::messageNames[response], comp->signature(), comp->getHotnessName());
+
+      // rethrow, rather than calling failCompilation so that exception type is
+      // preserved
+      throw;
       }
 
    releaseVMAccess(vmThread);
@@ -3748,8 +3750,9 @@ remoteCompile(J9VMThread *vmThread, TR::Compilation *compiler, TR_ResolvedMethod
          if (response == JITServer::MessageType::compilationThreadCrashed)
             {
             // IL of the crashing method generated successfully, proceed with diagnostic recompilation
-            auto recv = client->getRecvData<TR::FILE *>();
+            auto recv = client->getRecvData<TR::FILE *,OMR::Logger *>();
             TR::FILE *jitdumpFile = std::get<0>(recv);
+            OMR::Logger *jitdumpLogger = std::get<1>(recv);
             client->write(response, JITServer::Void());
 
             // Create method details for the JitDump recompilation
@@ -3759,6 +3762,7 @@ remoteCompile(J9VMThread *vmThread, TR::Compilation *compiler, TR_ResolvedMethod
             // so options haven't changed.
             J9::JitDumpMethodDetails jitDumpDetails(method, NULL, useAotCompilation);
             entry->_optimizationPlan->setLogCompilation(jitdumpFile);
+            entry->_optimizationPlan->setLogger(jitdumpLogger);
 
             if (writeVerboseLog)
                 TR_VerboseLog::writeLineLocked(TR_Vlog_JITServer,
@@ -4036,10 +4040,27 @@ remoteCompile(J9VMThread *vmThread, TR::Compilation *compiler, TR_ResolvedMethod
          if (compiler->getOption(TR_JITServerFollowRemoteCompileWithLocalCompile) && compilationSequenceNumber)
             {
             compiler->getOptions()->setLogFileForClientOptions(compilationSequenceNumber);
-            auto logFile = compiler->getOptions()->getLogFile();
+
+            // Copy the log file and Logger that was created on the Options object
+            // to the Compilation object
+            //
+            compiler->setOutFile(compiler->getOptions()->getLogFile());
+            compiler->setLogger(compiler->getOptions()->getLogger());
+
+            TR::FILE *logFile = compiler->getOutFile();
             auto debug = compiler->getDebug();
-            if (logFile && debug)
-               debug->setFile(logFile);
+            if (debug)
+               {
+               if (logFile)
+                  {
+                  debug->setOutFile(logFile);
+
+                  OMR::Logger *log = compiler->log();
+                  TR_ASSERT_FATAL(log, "Expecting a OMR::Logger with a log file");
+                  debug->setLogger(log);
+                  }
+               }
+
             bool compileWithoutVMAccess = !compiler->getOption(TR_DisableNoVMAccess);
             if (compileWithoutVMAccess)
                {

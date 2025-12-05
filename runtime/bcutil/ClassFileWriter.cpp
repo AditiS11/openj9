@@ -68,7 +68,6 @@ DECLARE_UTF8_ATTRIBUTE_NAME(PERMITTED_SUBCLASSES, "PermittedSubclasses");
 DECLARE_UTF8_ATTRIBUTE_NAME(LOADABLEDESCRIPTORS, "LoadableDescriptors");
 #endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
 #if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
-DECLARE_UTF8_ATTRIBUTE_NAME(IMPLICITCREATION, "ImplicitCreation");
 DECLARE_UTF8_ATTRIBUTE_NAME(NULLRESTRICTED, "NullRestricted");
 #endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 #if JAVA_SPEC_VERSION >= 11
@@ -129,13 +128,6 @@ ClassFileWriter::analyzeROMClass()
 		}
 	}
 #endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
-#if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
-	if (J9_ARE_ALL_BITS_SET(_romClass->optionalFlags, J9_ROMCLASS_OPTINFO_IMPLICITCREATION_ATTRIBUTE)) {
-		U_32 implicitCreationFlags = (U_32)getImplicitCreationFlags(_romClass);
-		addEntry((void*) &IMPLICITCREATION, 0, CFR_CONSTANT_Utf8);
-		addEntry(&implicitCreationFlags, 0, CFR_CONSTANT_Integer);
-	}
-#endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 	J9EnclosingObject * enclosingObject = getEnclosingMethodForROMClass(_javaVM, NULL, _romClass);
 	J9UTF8 * genericSignature = getGenericSignatureForROMClass(_javaVM, NULL, _romClass);
 	J9UTF8 * sourceFileName = getSourceFileNameForROMClass(_javaVM, NULL, _romClass);
@@ -1048,11 +1040,6 @@ ClassFileWriter::writeAttributes()
 		attributesCount += 1;
 	}
 #endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
-#if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
-	if (J9_ARE_ALL_BITS_SET(_romClass->optionalFlags, J9_ROMCLASS_OPTINFO_IMPLICITCREATION_ATTRIBUTE)) {
-		attributesCount += 1;
-	}
-#endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 	writeU16(attributesCount);
 
 	if ((0 != _romClass->innerClassCount)
@@ -1237,13 +1224,6 @@ ClassFileWriter::writeAttributes()
 	}
 #endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
 
-#if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
-	/* write ImplicitCreation attribute */
-	if (J9_ARE_ALL_BITS_SET(_romClass->optionalFlags, J9_ROMCLASS_OPTINFO_IMPLICITCREATION_ATTRIBUTE)) {
-		writeAttributeHeader((J9UTF8 *) &IMPLICITCREATION, sizeof(U_16));
-		writeU16(getImplicitCreationFlags(_romClass));
-	}
-#endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 }
 
 void ClassFileWriter::writeRecordAttribute()
@@ -1719,6 +1699,20 @@ readdWide:
 	}
 }
 
+#if defined(J9VM_OPT_VALHALLA_STRICT_FIELDS)
+void
+ClassFileWriter::writeUnsetFields(U_16 numberOfUnsetFields, U_8 **typeInfo)
+{
+	U_8 *cursor = *typeInfo;
+	for (U_16 i = 0; i < numberOfUnsetFields; i++) {
+		J9ROMNameAndSignature * nas = SRP_PTR_GET(cursor, J9ROMNameAndSignature *);
+		cursor += sizeof(J9SRP);
+		writeU16(indexForNAS(nas));
+	}
+	*typeInfo = cursor;
+}
+#endif /* defined(J9VM_OPT_VALHALLA_STRICT_FIELDS) */
+
 void
 ClassFileWriter::writeVerificationTypeInfo(U_16 count, U_8 ** typeInfo)
 {
@@ -1796,7 +1790,7 @@ ClassFileWriter::writeStackMapTableAttribute(J9ROMMethod * romMethod)
 	NEXT_U16(numEntries, stackMap);
 	writeU16(numEntries);
 
-	for (U_16 i = 0; i < numEntries; i++) {
+	for (U_16 i = 0; i < numEntries;) {
 		U_8 frameType;
 
 		NEXT_U8(frameType, stackMap);
@@ -1811,9 +1805,30 @@ ClassFileWriter::writeStackMapTableAttribute(J9ROMMethod * romMethod)
 			 * };
 			 */
 			writeVerificationTypeInfo(1, &stackMap);
+
+#if defined(J9VM_OPT_VALHALLA_STRICT_FIELDS)
+		} else if (CFR_STACKMAP_EARLY_LARVAL > frameType) { /* 128..245 */
+			/* Reserved frame types - no extra data */
+			Trc_BCU_Assert_ShouldNeverHappen();
+		} else if (CFR_STACKMAP_EARLY_LARVAL == frameType) { /* 246 */
+			/*
+			 * EARLY_LARVAL {
+			 *		U_16 numberOfUnsetFields
+			 *		U_16 unsetFields[numberOfUnsetFields]
+			 *		base frame
+			 * };
+			 */
+			U_16 numberOfUnsetFields = 0;
+			NEXT_U16(numberOfUnsetFields, stackMap);
+			writeU16(numberOfUnsetFields);
+			writeUnsetFields(numberOfUnsetFields, &stackMap);
+			/* Write base frame. */
+			continue;
+#else /* defined(J9VM_OPT_VALHALLA_STRICT_FIELDS) */
 		} else if (CFR_STACKMAP_SAME_LOCALS_1_STACK_EXTENDED > frameType) { /* 128..246 */
 			/* Reserved frame types - no extra data */
 			Trc_BCU_Assert_ShouldNeverHappen();
+#endif /* defined(J9VM_OPT_VALHALLA_STRICT_FIELDS) */
 		} else if (CFR_STACKMAP_SAME_LOCALS_1_STACK_EXTENDED == frameType) { /* 247 */
 			/*
 			 * SAME_LOCALS_1_STACK_EXTENDED {
@@ -1884,6 +1899,7 @@ ClassFileWriter::writeStackMapTableAttribute(J9ROMMethod * romMethod)
 			/* verification_type_info stack[number of stack items] */
 			writeVerificationTypeInfo(stackItemsCount, &stackMap);
 		}
+		i += 1;
 	}
 
 	writeU32At((U_32)(_classFileCursor - start), attributeLenAddr);

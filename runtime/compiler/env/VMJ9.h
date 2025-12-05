@@ -651,21 +651,10 @@ public:
    virtual uintptr_t           getReferenceFieldAtAddress(uintptr_t fieldAddress);
    virtual uintptr_t           getReferenceFieldAtAddress(void *fieldAddress){ return getReferenceFieldAtAddress((uintptr_t)fieldAddress); }
    virtual uintptr_t           getStaticReferenceFieldAtAddress(uintptr_t fieldAddress);
-   virtual int32_t              getInt32FieldAt(uintptr_t objectPointer, uintptr_t fieldOffset);
+   virtual int32_t             getInt32FieldAt(uintptr_t objectPointer, uintptr_t fieldOffset);
 
-   /* Used to contain all information needed for getObjectClassInfoFromObjectReferenceLocation
-    * to create a VPKnownObject constraint.
-    */
-   struct ObjectClassInfo
-      {
-      TR_OpaqueClassBlock *clazz;
-      TR_OpaqueClassBlock *jlClass;
-      bool isFixedJavaLangClass;
-      bool isString;
-      TR::KnownObjectTable::Index knownObjectIndex;
-      };
-   virtual ObjectClassInfo getObjectClassInfoFromObjectReferenceLocation
-                                    (TR::Compilation *comp, uintptr_t objectReferenceLocation);
+   virtual TR::KnownObjectTable::ObjectInfo getObjClassInfoFromKnotIndexNoCaching(TR::Compilation *comp, TR::KnownObjectTable::Index knotIndex);
+   TR::KnownObjectTable::ObjectInfo getObjClassInfoFromKnotIndex(TR::Compilation *comp, TR::KnownObjectTable::Index knotIndex);
 
    int32_t getInt32Field(uintptr_t objectPointer, const char *fieldName)
       {
