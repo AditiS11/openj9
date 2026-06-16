@@ -47,31 +47,39 @@ class VM_ObjectHash
 private:
 #if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
 	struct ValueTypeHashQueueEntry {
-		j9object_t objectPointer;
+		j9object_t *frameSlot;
 		J9Class *clazz;
 		UDATA startOffset;
 	};
 
 	struct ValueTypeHashQueue {
 		J9JavaVM * const vm;
+		J9VMThread *currentThread;
 		ValueTypeHashQueueEntry *entries;
 		UDATA capacity;
 		UDATA head;
 		UDATA tail;
+		UDATA pushedFrameCount;
 		ValueTypeHashQueueEntry space[128];
 
-		ValueTypeHashQueue(J9JavaVM *vm)
+		ValueTypeHashQueue(J9JavaVM *vm, J9VMThread *thread)
 			: vm(vm)
+			, currentThread(thread)
 			, entries(space)
 			, capacity(sizeof(space) / sizeof(space[0]))
 			, head(0)
 			, tail(0)
+			, pushedFrameCount(0)
 		{
 		}
 
 		~ValueTypeHashQueue()
 		{
 			PORT_ACCESS_FROM_JAVAVM(vm);
+			while (pushedFrameCount > 0) {
+				VM_VMHelpers::popObjectInSpecialFrame(currentThread);
+				pushedFrameCount -= 1;
+			}
 			if (space != entries) {
 				j9mem_free_memory(entries);
 			}
@@ -108,10 +116,13 @@ private:
 				head = 0;
 			}
 
-			entries[tail].objectPointer = objectPointer;
+			VM_VMHelpers::pushObjectInSpecialFrame(currentThread, objectPointer);
+
+			entries[tail].frameSlot = reinterpret_cast<j9object_t *>(currentThread->sp);
 			entries[tail].clazz = clazz;
 			entries[tail].startOffset = startOffset;
 			tail += 1;
+			pushedFrameCount += 1;
 			return true;
 		}
 
@@ -287,14 +298,24 @@ private:
 		MM_ObjectAccessBarrierAPI objectAccessBarrier(currentThread);
 		I_32 hashValue = getSalt(vm, (UDATA)objectPointer, true);
 		U_32 numBytesHashed = 0;
-		ValueTypeHashQueue queue(vm);
-		ValueTypeHashQueueEntry entry = {objectPointer, clazz, startOffset};
+		ValueTypeHashQueue queue(vm, currentThread);
+		ValueTypeHashQueueEntry entry;
 		bool oom = false;
+
+		if (!queue.append(objectPointer, clazz, startOffset)) {
+			oom = true;
+			goto done;
+		}
+
+		if (!queue.remove(&entry)) {
+			goto done;
+		}
 
 		hashValue = mix(hashValue, (U_32)(UDATA)clazz);
 		numBytesHashed = sizeof(UDATA);
 
 		while (true) {
+			j9object_t objectPointer = *entry.frameSlot;
 			J9ROMFieldOffsetWalkState state;
 			J9ROMFieldOffsetWalkResult *result = vm->internalVMFunctions->fieldOffsetsStartDo(
 					vm, entry.clazz->romClass, VM_VMHelpers::getSuperclass(entry.clazz), &state,
@@ -307,14 +328,14 @@ private:
 #if defined(J9VM_OPT_VALHALLA_COMPACT_LAYOUTS)
 				case 'Z': /* boolean */
 				case 'B': /* byte */ {
-					U_32 datum = (U_32)objectAccessBarrier.inlineMixedObjectReadU8(currentThread, entry.objectPointer, fieldOffset);
+					U_32 datum = (U_32)objectAccessBarrier.inlineMixedObjectReadU8(currentThread, objectPointer, fieldOffset);
 					hashValue = mix(hashValue, datum);
 					numBytesHashed += 1;
 					break;
 				}
 				case 'C': /* char */
 				case 'S': /* short */ {
-					U_32 datum = (U_32)objectAccessBarrier.inlineMixedObjectReadU16(currentThread, entry.objectPointer, fieldOffset);
+					U_32 datum = (U_32)objectAccessBarrier.inlineMixedObjectReadU16(currentThread, objectPointer, fieldOffset);
 					hashValue = mix(hashValue, datum);
 					numBytesHashed += 2;
 					break;
@@ -327,7 +348,7 @@ private:
 #endif /* defined(J9VM_OPT_VALHALLA_COMPACT_LAYOUTS) */
 				case 'I': /* int */
 				case 'F': /* float */ {
-					U_32 datum = objectAccessBarrier.inlineMixedObjectReadU32(currentThread, entry.objectPointer, fieldOffset);
+					U_32 datum = objectAccessBarrier.inlineMixedObjectReadU32(currentThread, objectPointer, fieldOffset);
 					hashValue = mix(hashValue, datum);
 					numBytesHashed += 4;
 					break;
@@ -335,7 +356,7 @@ private:
 
 				case 'J': /* long */
 				case 'D': /* double */ {
-					U_64 datum = objectAccessBarrier.inlineMixedObjectReadU64(currentThread, entry.objectPointer, fieldOffset);
+					U_64 datum = objectAccessBarrier.inlineMixedObjectReadU64(currentThread, objectPointer, fieldOffset);
 					hashValue = mix(hashValue, (U_32)(datum & 0xffffffff));
 					hashValue = mix(hashValue, (U_32)(datum >> 32));
 					numBytesHashed += 8;
@@ -350,14 +371,14 @@ private:
 						if (vm->internalVMFunctions->isFlattenableFieldFlattened(entry.clazz, result->field)) {
 							/* Null-restricted flattened field. */
 							J9Class *flatClazz = vm->internalVMFunctions->getFlattenableFieldType(entry.clazz, result->field);
-							if (!queue.append(entry.objectPointer, flatClazz, fieldOffset)) {
+							if (!queue.append(objectPointer, flatClazz, fieldOffset)) {
 								hashValue = 0;
 								oom = true;
 								goto done;
 							}
 						} else {
 							/* Null-restricted non-flattened field. */
-							j9object_t fieldObject = objectAccessBarrier.inlineMixedObjectReadObject(currentThread, entry.objectPointer, fieldOffset);
+							j9object_t fieldObject = objectAccessBarrier.inlineMixedObjectReadObject(currentThread, objectPointer, fieldOffset);
 							if (NULL != fieldObject) {
 								J9Class *fieldClazz = J9OBJECT_CLAZZ(currentThread, fieldObject);
 								UDATA flags = J9OBJECT_FLAGS_FROM_CLAZZ(currentThread, fieldObject);
@@ -384,7 +405,7 @@ private:
 					} else
 #endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
 					{
-						j9object_t fieldObject = objectAccessBarrier.inlineMixedObjectReadObject(currentThread, entry.objectPointer, fieldOffset);
+						j9object_t fieldObject = objectAccessBarrier.inlineMixedObjectReadObject(currentThread, objectPointer, fieldOffset);
 						if (NULL != fieldObject) {
 							J9Class *fieldClazz = J9OBJECT_CLAZZ(currentThread, fieldObject);
 							UDATA flags = J9OBJECT_FLAGS_FROM_CLAZZ(currentThread, fieldObject);
