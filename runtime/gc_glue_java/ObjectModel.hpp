@@ -654,7 +654,11 @@ public:
 			}
 
 			int32_t *hashCodePointer = (int32_t *)((uint8_t *)destinationObjectPtr + hashOffset);
-			*hashCodePointer = convertValueToHashForObject(_javaVM, (uintptr_t)forwardedHeader->getObject(), clazz);
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+			*hashCodePointer = internalConvertObjectToHash(_javaVM, forwardedHeader->getObject());
+#else /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
+			*hashCodePointer = convertValueToHash(_javaVM, (uintptr_t)forwardedHeader->getObject(), clazz);
+#endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
 			setObjectJustHasBeenMoved(destinationObjectPtr);
 		}
 	}
