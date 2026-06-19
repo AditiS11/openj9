@@ -679,6 +679,9 @@ public:
 				}
 #if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
 				hashValue = inlineConvertObjectToHash(vm, currentThread, objectPointer, oomOccurred);
+				if (!*oomOccurred && J9_IS_J9CLASS_VALUETYPE(objectClass)) {
+					*(I_32 *)((UDATA)objectPointer + objectClass->backfillOffset) = hashValue;
+				}
 #else /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
 				hashValue = inlineConvertValueToHash(vm, (UDATA)objectPointer);
 #endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
