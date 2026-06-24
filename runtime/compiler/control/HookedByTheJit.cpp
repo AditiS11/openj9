@@ -4579,7 +4579,13 @@ void memoryDisclaimLogic(TR::CompilationInfo *compInfo, uint64_t crtElapsedTime,
             // or if there was a large time interval since the last disclaim
             if (vmFuncs->totalNumberOfDisclaimableClassMemorySegments(javaVM) > lastNumAllocatedClassMemorySegments
                 || crtElapsedTime > lastClassMemoryDisclaimTime + 12 * TR::Options::_minTimeBetweenMemoryDisclaims) {
-                vmFuncs->disclaimClassMemory(javaVM, 0);
+                size_t rssBefore = getRSS_Kb();
+                BOOLEAN ok = vmFuncs->disclaimClassMemory(javaVM, 0);
+                size_t rssAfter = getRSS_Kb();
+                fprintf(stderr,
+                    "[RAMClassDisclaim] t=%u ok=%d RSS before=%zu KB  after=%zu KB  delta=%zd KB\n",
+                    (uint32_t)crtElapsedTime, (int)ok, rssBefore, rssAfter,
+                    (ssize_t)(rssBefore - rssAfter));
 
                 lastClassMemoryDisclaimTime = crtElapsedTime; // Update the time when disclaim was last performed
                 lastNumAllocatedClassMemorySegments = vmFuncs->totalNumberOfDisclaimableClassMemorySegments(javaVM);
