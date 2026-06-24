@@ -4338,6 +4338,17 @@ processVMArgsFromFirstToLast(J9JavaVM * vm)
 		}
 	}
 
+	vm->minTimeBetweenClassMemoryDisclaims = 5000; /* 5 seconds default */
+	{
+		IDATA argIndex = FIND_AND_CONSUME_VMARG(STARTSWITH_MATCH, VMOPT_XXMINTIMEBETWEENCLASSMEMORYDISCLAIM_EQUALS, NULL);
+		if (argIndex >= 0) {
+			UDATA value = 0;
+			char *optname = VMOPT_XXMINTIMEBETWEENCLASSMEMORYDISCLAIM_EQUALS;
+			GET_INTEGER_VALUE(argIndex, optname, value);
+			vm->minTimeBetweenClassMemoryDisclaims = (I_32)(value * 1000); /* Convert seconds to milliseconds. */
+		}
+	}
+
 #if defined(J9VM_OPT_CRIU_SUPPORT)
 	{
 		IDATA enableCRIU = FIND_AND_CONSUME_VMARG(EXACT_MATCH, VMOPT_XXENABLECRIU, NULL);

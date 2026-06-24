@@ -4552,18 +4552,14 @@ void memoryDisclaimLogic(TR::CompilationInfo *compInfo, uint64_t crtElapsedTime,
     if (J9_ARE_ANY_BITS_SET(javaVM->extendedRuntimeFlags3,
             J9_EXTENDED_RUNTIME3_DISCLAIM_ROM_CLASS_MEMORY | J9_EXTENDED_RUNTIME3_DISCLAIM_RAM_CLASS_MEMORY)) {
         // Ensure we don't do it too often
-        if (crtElapsedTime > lastClassMemoryDisclaimTime + TR::Options::_minTimeBetweenMemoryDisclaims) {
+	if (crtElapsedTime > lastClassMemoryDisclaimTime + javaVM->minTimeBetweenClassMemoryDisclaims) {
             J9InternalVMFunctions *vmFuncs = javaVM->internalVMFunctions;
 
-            // Disclaim if at least one class memory segment has been allocated since the last disclaim
-            // or if there was a large time interval since the last disclaim
-            if (vmFuncs->totalNumberOfDisclaimableClassMemorySegments(javaVM) > lastNumAllocatedClassMemorySegments
-                || crtElapsedTime > lastClassMemoryDisclaimTime + 12 * TR::Options::_minTimeBetweenMemoryDisclaims) {
-                vmFuncs->disclaimClassMemory(javaVM, 0);
+	    //Always disclaim when the time interval has passed.
+	    vmFuncs->disclaimClassMemory(javaVM, 0);
+	    lastClassMemoryDisclaimTime = crtElapsedTime; // Update the time when disclaim was last performed
+	    lastNumAllocatedClassMemorySegments = vmFuncs->totalNumberOfDisclaimableClassMemorySegments(javaVM);
 
-                lastClassMemoryDisclaimTime = crtElapsedTime; // Update the time when disclaim was last performed
-                lastNumAllocatedClassMemorySegments = vmFuncs->totalNumberOfDisclaimableClassMemorySegments(javaVM);
-            }
         }
     }
 

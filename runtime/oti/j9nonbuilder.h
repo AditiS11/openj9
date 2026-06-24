@@ -6616,6 +6616,7 @@ typedef struct J9JavaVM {
 	char* alternateJitDir;
 	UDATA debugField1;
 	UDATA segregatedAllocationCacheSize;
+	I_32 minTimeBetweenClassMemoryDisclaims;
 	struct OMR_VM* omrVM;
 	struct OMR_Runtime* omrRuntime;
 	UDATA vmThreadSize;
