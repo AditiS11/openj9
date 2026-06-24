@@ -162,7 +162,7 @@ void freeMemorySegment(J9JavaVM *javaVM, J9MemorySegment *segment, BOOLEAN freeD
 #endif /* defined(J9VM_OPT_SNAPSHOTS) */
 			{
 				if (J9JAVAVM_COMPRESS_OBJECT_REFERENCES(javaVM)
-					&& J9_ARE_ANY_BITS_SET(segment->type, MEMORY_TYPE_RAM_CLASS_SUB4G)
+					&& J9_ARE_ANY_BITS_SET(segment->type, MEMORY_TYPE_RAM_CLASS_SUB4G | MEMORY_TYPE_DISCLAIMABLE_TO_FILE)
 				) {
 					j9mem_free_memory32(segment->baseAddress);
 				} else {
@@ -327,7 +327,7 @@ allocateMemoryForSegment(J9JavaVM *javaVM,J9MemorySegment *segment, J9PortVmemPa
 #endif /* defined(J9VM_OPT_SNAPSHOTS) */
 		{
 			if (J9JAVAVM_COMPRESS_OBJECT_REFERENCES(javaVM)
-				&& J9_ARE_ANY_BITS_SET(segment->type, MEMORY_TYPE_RAM_CLASS_SUB4G)
+				&& J9_ARE_ANY_BITS_SET(segment->type, MEMORY_TYPE_RAM_CLASS_SUB4G | MEMORY_TYPE_DISCLAIMABLE_TO_FILE)
 			) {
 				tmpAddr = j9mem_allocate_memory32(segment->size, memoryCategory);
 			} else {
@@ -930,10 +930,14 @@ disclaimClassMemory(J9JavaVM *vm, UDATA flags)
 		while (NULL != segment) {
 			BOOLEAN isROM = J9_ARE_ANY_BITS_SET(segment->type, MEMORY_TYPE_ROM_CLASS);
 			BOOLEAN isRAM = J9_ARE_ANY_BITS_SET(segment->type, MEMORY_TYPE_RAM_CLASS);
-			if ((enableRAMClassDisclaim && isRAM && J9_ARE_ANY_BITS_SET(segment->type, MEMORY_TYPE_DISCLAIMABLE_TO_FILE))
+			BOOLEAN isDisclaimable = J9_ARE_ANY_BITS_SET(segment->type, MEMORY_TYPE_DISCLAIMABLE_TO_FILE);
+			if ((enableRAMClassDisclaim && isRAM && isDisclaimable)
 			|| (enableROMClassDisclaim && isROM)
 			) {
-				I_32 result = madvise(segment->heapBase, ROUND_DOWN_TO(pageSize, (UDATA)segment->heapTop) - (UDATA)segment->heapBase, MADV_PAGEOUT);
+				UDATA segBase = (UDATA)segment->heapBase;
+				UDATA segTop  = (UDATA)segment->heapTop;
+				UDATA disclaimSize = ROUND_DOWN_TO(pageSize, segTop) - segBase;
+				I_32 result = madvise(segment->heapBase, disclaimSize, MADV_PAGEOUT);
 				Trc_Segment_disclaimClassMemory_result(
 					segment, segment->heapBase,
 					segment->size, segment->type, segment->baseAddress, result);
