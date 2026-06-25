@@ -659,6 +659,9 @@ public:
 						if (!*oomOccurred) {
 							/* hashValue cannot be zero. Should assert here but we are in util. */
 							*(I_32 *)((UDATA)objectPointer + objectClass->backfillOffset) = hashValue;
+							if (J9_ARE_NO_BITS_SET(flags, OBJECT_HEADER_HAS_BEEN_HASHED_IN_CLASS)) {
+								setHasBeenHashed(vm, objectPointer);
+							}
 						}
 					}
 				}
