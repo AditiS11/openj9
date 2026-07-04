@@ -371,24 +371,10 @@ private:
 							j9object_t fieldObject = objectAccessBarrier.inlineMixedObjectReadObject(currentThread, entry.objectPointer, fieldOffset);
 							if (NULL != fieldObject) {
 								J9Class *fieldClazz = J9OBJECT_CLAZZ(currentThread, fieldObject);
-								UDATA flags = J9OBJECT_FLAGS_FROM_CLAZZ(currentThread, fieldObject);
-								bool addToQueue = true;
-								if (J9_ARE_ANY_BITS_SET(flags, OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS)) {
-									UDATA hashSlotOffset = fieldClazz->backfillOffset;
-									I_32 storedHash = objectAccessBarrier.inlineMixedObjectReadI32(currentThread, fieldObject, hashSlotOffset);
-									if (0 != storedHash) {
-										datum = (U_32)storedHash;
-										hashValue = mix(hashValue, datum);
-										numBytesHashed += 4;
-										addToQueue = false;
-									}
-								}
-								if (addToQueue) {
-									if (!queue.append(fieldObject, fieldClazz, J9VMTHREAD_OBJECT_HEADER_SIZE(currentThread))) {
-										hashValue = 0;
-										oom = true;
-										goto done;
-									}
+								if (!queue.append(fieldObject, fieldClazz, J9VMTHREAD_OBJECT_HEADER_SIZE(currentThread))) {
+									hashValue = 0;
+									oom = true;
+									goto done;
 								}
 							}
 						}
