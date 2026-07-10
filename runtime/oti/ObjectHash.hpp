@@ -50,24 +50,28 @@ private:
 		j9object_t objectPointer;
 		J9Class *clazz;
 		UDATA startOffset;
+
+		U_32 hashValue;             /* Murmur3 hash of the current entry. */
+		U_32 numBytesHashed;        /* Number of bytes hashed while processing current entry. */
+
+		J9ROMFieldOffsetWalkState walkState;       /* Field iterator state of the current entry. */
+		J9ROMFieldOffsetWalkResult *currentField;  /* Next field to process wthin the current field. */
+
+		IDATA parentIndex;          /* Index of the parent entry, -1 for the root entry. */
 	};
 
 	struct ValueTypeHashQueue {
 		J9JavaVM * const vm;
 		ValueTypeHashQueueEntry *entries;
-		UDATA head;
-		UDATA tail;
+		IDATA top;
 		UDATA capacity;
-		bool full;
 		ValueTypeHashQueueEntry space[128];
 
 		ValueTypeHashQueue(J9JavaVM *vm)
 			: vm(vm)
 			, entries(space)
-			, head(0)
-			, tail(0)
+			, top(-1)
 			, capacity(sizeof(space) / sizeof(space[0]))
-			, full(false)
 		{
 		}
 
@@ -80,67 +84,73 @@ private:
 		}
 
 		/**
-		 * Append an entry to this queue.
+		 * Push a new entry to the queue. 
+		 * The queue follows a DFS traversal.
 		 *
 		 * Handles transition from internal space to heap space on overflow.
 		 *
-		 * @param objectPointer  a pointer to an object to be queued
-		 * @param clazz          the class of that object
-		 * @param startOffset    the starting offset in that object
-		 * @return true if successful, false if additional space could not be allocated
+		 * @param objectPointer  the field whose hash needs to be computed.
+		 * @param clazz          class of the field.
+		 * @param startOffset    offset of the first field
+		 * @param parentIndex    index of the parent entry (-1 for root)
+		 * @return true on success, false if heap allocation failed
 		 */
 		VMINLINE bool
-		append(j9object_t objectPointer, J9Class *clazz, UDATA startOffset)
+		append(j9object_t objectPointer, J9Class *clazz, UDATA startOffset, IDATA parentIndex)
 		{
-			if (full) {
+			UDATA newTop = (UDATA)(top + 1);
+			if (newTop >= capacity) {
 				PORT_ACCESS_FROM_JAVAVM(vm);
 				UDATA newCapacity = capacity * 2;
-				ValueTypeHashQueueEntry *newEntries = (ValueTypeHashQueueEntry *)j9mem_allocate_memory(newCapacity * sizeof(ValueTypeHashQueueEntry), OMRMEM_CATEGORY_VM);
+				ValueTypeHashQueueEntry *newEntries = (ValueTypeHashQueueEntry *)j9mem_allocate_memory(
+					newCapacity * sizeof(ValueTypeHashQueueEntry), OMRMEM_CATEGORY_VM);
 				if (NULL == newEntries) {
 					return false;
 				}
-				/* Because this queue is full, head and tail are equal. */
-				UDATA size = capacity - head;
-				memcpy(newEntries, &entries[head], size * sizeof(ValueTypeHashQueueEntry));
-				if (0 != head) {
-					memcpy(&newEntries[size], entries, head * sizeof(ValueTypeHashQueueEntry));
-				}
+				memcpy(newEntries, entries, capacity * sizeof(ValueTypeHashQueueEntry));
 				if (space != entries) {
 					j9mem_free_memory(entries);
 				}
 				entries = newEntries;
-				head = 0;
-				tail = capacity;
 				capacity = newCapacity;
-				full = false;
 			}
-
-			entries[tail].objectPointer = objectPointer;
-			entries[tail].clazz = clazz;
-			entries[tail].startOffset = startOffset;
-			tail = (tail + 1) % capacity;
-			if (tail == head) {
-				full = true;
-			}
+			ValueTypeHashQueueEntry *frame = &entries[newTop];
+			frame->objectPointer = objectPointer;
+			frame->clazz = clazz;
+			frame->startOffset = startOffset;
+			frame->hashValue = 0;
+			frame->numBytesHashed = 0;
+			frame->currentField = NULL;
+			frame->parentIndex = parentIndex;
+			top = (IDATA)newTop;
 			return true;
 		}
 
 		/**
-		 * Copy the entry at the head of this queue.
-		 *
-		 * @param entry a pointer to space to receive the entry
-		 * @return true if the queue was not empty
+		 * @return true if the stack is empty.
 		 */
 		VMINLINE bool
-		remove(ValueTypeHashQueueEntry *entry)
+		isEmpty(void) const
 		{
-			if ((head != tail) || full) {
-				*entry = entries[head];
-				head = (head + 1) % capacity;
-				full = false;
-				return true;
-			}
-			return false;
+			return -1 == top;
+		}
+
+		/**
+		 * @return a pointer to the top frame.
+		 */
+		VMINLINE ValueTypeHashQueueEntry *
+		peek(void)
+		{
+			return &entries[top];
+		}
+
+		/**
+		 * Remove the top frame.
+		 */
+		VMINLINE void
+		remove(void)
+		{
+			top -= 1;
 		}
 	};
 #endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
@@ -281,191 +291,226 @@ private:
 
 #if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
 	/**
-	 * Calculate hashcode for valuetypes by hashing all its fields iteratively.
+	 * Initialize the hash value of the current entry.
+	 *
+	 * @param vm     a java VM
+	 * @param frame  the entry to initialize
+	 */
+	static VMINLINE void
+	initHashFrame(J9JavaVM *vm, ValueTypeHashQueueEntry *frame)
+	{
+		frame->hashValue = getSalt(vm, (UDATA)frame->objectPointer, true);
+		frame->hashValue = mix(frame->hashValue, (U_32)(UDATA)frame->clazz);
+		frame->numBytesHashed = sizeof(UDATA);
+		frame->currentField = vm->internalVMFunctions->fieldOffsetsStartDo(
+				vm, frame->clazz->romClass, VM_VMHelpers::getSuperclass(frame->clazz),
+				&frame->walkState, J9VM_FIELD_OFFSET_WALK_INCLUDE_INSTANCE,
+				frame->clazz->flattenedClassCache);
+	}
+
+	/**
+	 * Push an entry for value object field.
+	 * Update the parent entry's iterator to the next field.
+	 * Initialize the child entry's hash.
+	 *
+	 * @param vm            a java VM
+	 * @param currentThread the current VM thread
+	 * @param queue         the queue
+	 * @param entry         the parent entry
+	 * @param childObject   the child object to hash
+	 * @param childClazz    class of child Object
+	 * @param childStart    startOffset for the child object
+	 * @return true on success, false on OOM
+	 */
+	static VMINLINE bool
+	pushChildFrame(J9JavaVM *vm, J9VMThread *currentThread, ValueTypeHashQueue *queue,
+	               ValueTypeHashQueueEntry *entry, j9object_t childObject,
+	               J9Class *childClazz, UDATA childStart)
+	{
+		IDATA parentIndex = queue->top;
+		/* Advance the parent's iterator before pushing so it resumes correctly. */
+		entry->currentField = vm->internalVMFunctions->fieldOffsetsNextDo(&entry->walkState);
+		if (!queue->append(childObject, childClazz, childStart, parentIndex)) {
+			return false;
+		}
+		initHashFrame(vm, queue->peek());
+		return true;
+	}
+
+	/**
+	 * Calculate the hash code for a value object using a DFS queue traversal.
 	 * Use inlineConvertValueToHash for reference fields.
 	 * Use a queue to iterate through the fields of a valuetype.
 	 *
 	 * @param vm                a java VM
-	 * @param objectPointer     a valid valuetype object
-	 * @param clazz             class of the valuetye object
+	 * @param currentThread     the current VM thread
+	 * @param objectPointer     a valid value object
+	 * @param clazz             class of the value object
 	 * @param startOffset       offset to start reading fields from
-	 * @param[out] oomOccurred  true if an OOM occurred during hash computation
-	 * @return the calculated hash code or 0 if an OOM occurred
+	 * @param[out] oomOccurred  set to true if heap allocation failed
+	 * @return the finalized hash code, or 0 if an OOM occurred
 	 */
 	static I_32
 	convertValueObjectAtOffsetToHash(J9JavaVM *vm, J9VMThread *currentThread, j9object_t objectPointer, J9Class *clazz, UDATA startOffset, bool *oomOccurred)
 	{
 		MM_ObjectAccessBarrierAPI objectAccessBarrier(currentThread);
-		I_32 hashValue = getSalt(vm, (UDATA)objectPointer, true);
-		U_32 numBytesHashed = 0;
 		ValueTypeHashQueue queue(vm);
-		ValueTypeHashQueueEntry entry = {objectPointer, clazz, startOffset};
-		bool oom = false;
 
-		hashValue = mix(hashValue, (U_32)(UDATA)clazz);
-		numBytesHashed = sizeof(UDATA);
+		if (!queue.append(objectPointer, clazz, startOffset, -1)) {
+			*oomOccurred = true;
+			return 0;
+		}
+		initHashFrame(vm, queue.peek());
 
-		while (true) {
-			J9ROMFieldOffsetWalkState state;
-			J9ROMFieldOffsetWalkResult *result = vm->internalVMFunctions->fieldOffsetsStartDo(
-					vm, entry.clazz->romClass, VM_VMHelpers::getSuperclass(entry.clazz), &state,
-					J9VM_FIELD_OFFSET_WALK_INCLUDE_INSTANCE, entry.clazz->flattenedClassCache);
-			while (NULL != result->field) {
-				UDATA fieldOffset = entry.startOffset + result->offset;
-				J9UTF8 *signature = J9ROMNAMEANDSIGNATURE_SIGNATURE(&result->field->nameAndSignature);
-				U_8 *sigChar = J9UTF8_DATA(signature);
-				switch (*sigChar) {
-#if defined(J9VM_OPT_VALHALLA_COMPACT_LAYOUTS)
-				case 'Z': /* boolean */
-				case 'B': /* byte */ {
-					U_32 datum = (U_32)objectAccessBarrier.inlineMixedObjectReadU8(currentThread, entry.objectPointer, fieldOffset);
-					hashValue = mix(hashValue, datum);
-					numBytesHashed += 1;
-					break;
-				}
-				case 'C': /* char */
-				case 'S': /* short */ {
-					U_32 datum = (U_32)objectAccessBarrier.inlineMixedObjectReadU16(currentThread, entry.objectPointer, fieldOffset);
-					hashValue = mix(hashValue, datum);
-					numBytesHashed += 2;
-					break;
-				}
-#else /* defined(J9VM_OPT_VALHALLA_COMPACT_LAYOUTS) */
-				case 'Z': /* boolean */
-				case 'B': /* byte */
-				case 'C': /* char */
-				case 'S': /* short */
-#endif /* defined(J9VM_OPT_VALHALLA_COMPACT_LAYOUTS) */
-				case 'I': /* int */
-				case 'F': /* float */ {
-					U_32 datum = objectAccessBarrier.inlineMixedObjectReadU32(currentThread, entry.objectPointer, fieldOffset);
-					hashValue = mix(hashValue, datum);
-					numBytesHashed += 4;
-					break;
-				}
+		while (!queue.isEmpty()) {
+			ValueTypeHashQueueEntry *entry = queue.peek();
 
-				case 'J': /* long */
-				case 'D': /* double */ {
-					U_64 datum = objectAccessBarrier.inlineMixedObjectReadU64(currentThread, entry.objectPointer, fieldOffset);
-					hashValue = mix(hashValue, (U_32)(datum & 0xffffffff));
-					hashValue = mix(hashValue, (U_32)(datum >> 32));
-					numBytesHashed += 8;
-					break;
+			/* All fields processed: finalize this frame and return result to parent. */
+			if (NULL == entry->currentField->field) {
+				U_32 finalHash = finalizeMurmur3Hash(entry->hashValue, entry->numBytesHashed);
+				if (0 == finalHash) {
+					finalHash = 1;
 				}
+				IDATA parentIdx = entry->parentIndex;
+				queue.remove();
 
-				case '[':
-				case 'L': {
-					U_32 datum = 0;
-#if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
-					if (J9ROMFIELD_IS_NULL_RESTRICTED(result->field)) {
-						if (vm->internalVMFunctions->isFlattenableFieldFlattened(entry.clazz, result->field)) {
-							/* Null-restricted flattened field. */
-							J9Class *flatClazz = vm->internalVMFunctions->getFlattenableFieldType(entry.clazz, result->field);
-							if (!queue.append(entry.objectPointer, flatClazz, fieldOffset)) {
-								hashValue = 0;
-								oom = true;
-								goto done;
-							}
-						} else {
-							/* Null-restricted non-flattened field. */
-							j9object_t fieldObject = objectAccessBarrier.inlineMixedObjectReadObject(currentThread, entry.objectPointer, fieldOffset);
-							if (NULL != fieldObject) {
-								J9Class *fieldClazz = J9OBJECT_CLAZZ(currentThread, fieldObject);
-								UDATA flags = J9OBJECT_FLAGS_FROM_CLAZZ(currentThread, fieldObject);
-								bool addToQueue = true;
-								if (J9_ARE_ANY_BITS_SET(flags, OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS)) {
-									UDATA hashSlotOffset = fieldClazz->backfillOffset;
-									I_32 storedHash = objectAccessBarrier.inlineMixedObjectReadI32(currentThread, fieldObject, hashSlotOffset);
-									if (0 != storedHash) {
-										datum = (U_32)storedHash;
-										hashValue = mix(hashValue, datum);
-										numBytesHashed += 4;
-										addToQueue = false;
-									}
-								}
-								if (addToQueue) {
-									if (!queue.append(fieldObject, fieldClazz, J9VMTHREAD_OBJECT_HEADER_SIZE(currentThread))) {
-										hashValue = 0;
-										oom = true;
-										goto done;
-									}
-								}
-							}
-						}
-					} else
-#endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
-					{
-						j9object_t fieldObject = objectAccessBarrier.inlineMixedObjectReadObject(currentThread, entry.objectPointer, fieldOffset);
-						if (NULL != fieldObject) {
-							J9Class *fieldClazz = J9OBJECT_CLAZZ(currentThread, fieldObject);
-							UDATA flags = J9OBJECT_FLAGS_FROM_CLAZZ(currentThread, fieldObject);
-							if (J9_ARE_ANY_BITS_SET(flags, OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS)) {
-								bool addToQueue = true;
-								I_32 storedHash = 0;
-								if (J9CLASS_IS_ARRAY(fieldClazz)) {
-									if (J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm)) {
-										storedHash = inlineIndexableObjectHashCodeCompressed(vm, fieldObject, fieldClazz);
-									} else {
-										storedHash = inlineIndexableObjectHashCodeFull(vm, fieldObject, fieldClazz);
-									}
-								} else {
-									UDATA hashSlotOffset = fieldClazz->backfillOffset;
-									storedHash = objectAccessBarrier.inlineMixedObjectReadI32(currentThread, fieldObject, hashSlotOffset);
-								}
-								if (0 != storedHash) {
-									datum = (U_32)storedHash;
-									hashValue = mix(hashValue, datum);
-									numBytesHashed += 4;
-									addToQueue = false;
-								}
-								if (addToQueue) {
-									if (!queue.append(fieldObject, fieldClazz, J9VMTHREAD_OBJECT_HEADER_SIZE(currentThread))) {
-										hashValue = 0;
-										oom = true;
-										goto done;
-									}
-								}
-							} else if (J9_IS_J9CLASS_VALUETYPE(fieldClazz)) {
-								if (!queue.append(fieldObject, fieldClazz, J9VMTHREAD_OBJECT_HEADER_SIZE(currentThread))) {
-									hashValue = 0;
-									oom = true;
-									goto done;
-								}
-							} else {
-								datum = (U_32)inlineObjectHashCode(vm, fieldObject, oomOccurred);
-								if (*oomOccurred) {
-									hashValue = 0;
-									oom = true;
-									goto done;
-								}
-								hashValue = mix(hashValue, datum);
-								numBytesHashed += 4;
-							}
-						}
-					}
-					break;
+				if (-1 == parentIdx) {
+					/* Final hash value. */
+					return (I_32)finalHash;
 				}
-				default:
-					/* Invalid field signature. Should assert but we are in util. */
-					break;
-				}
-				result = vm->internalVMFunctions->fieldOffsetsNextDo(&state);
+				/* Mix the child's finalized hash into the parent. */
+				ValueTypeHashQueueEntry *parent = &queue.entries[parentIdx];
+				parent->hashValue = mix(parent->hashValue, finalHash);
+				parent->numBytesHashed += 4;
+				continue;
 			}
-			if (!queue.remove(&entry)) {
+
+			J9ROMFieldOffsetWalkResult *result = entry->currentField;
+			UDATA fieldOffset = entry->startOffset + result->offset;
+			U_8 sigChar = *J9UTF8_DATA(J9ROMNAMEANDSIGNATURE_SIGNATURE(&result->field->nameAndSignature));
+
+			switch (sigChar) {
+#if defined(J9VM_OPT_VALHALLA_COMPACT_LAYOUTS)
+			case 'Z': /* boolean */
+			case 'B': /* byte */ {
+				U_32 datum = (U_32)objectAccessBarrier.inlineMixedObjectReadU8(currentThread, entry->objectPointer, fieldOffset);
+				entry->hashValue = mix(entry->hashValue, datum);
+				entry->numBytesHashed += 1;
 				break;
 			}
+			case 'C': /* char */
+			case 'S': /* short */ {
+				U_32 datum = (U_32)objectAccessBarrier.inlineMixedObjectReadU16(currentThread, entry->objectPointer, fieldOffset);
+				entry->hashValue = mix(entry->hashValue, datum);
+				entry->numBytesHashed += 2;
+				break;
+			}
+#else /* defined(J9VM_OPT_VALHALLA_COMPACT_LAYOUTS) */
+			case 'Z': /* boolean */
+			case 'B': /* byte */
+			case 'C': /* char */
+			case 'S': /* short */
+#endif /* defined(J9VM_OPT_VALHALLA_COMPACT_LAYOUTS) */
+			case 'I': /* int */
+			case 'F': /* float */ {
+				U_32 datum = objectAccessBarrier.inlineMixedObjectReadU32(currentThread, entry->objectPointer, fieldOffset);
+				entry->hashValue = mix(entry->hashValue, datum);
+				entry->numBytesHashed += 4;
+				break;
+			}
+			case 'J': /* long */
+			case 'D': /* double */ {
+				U_64 datum = objectAccessBarrier.inlineMixedObjectReadU64(currentThread, entry->objectPointer, fieldOffset);
+				entry->hashValue = mix(entry->hashValue, (U_32)(datum & 0xffffffff));
+				entry->hashValue = mix(entry->hashValue, (U_32)(datum >> 32));
+				entry->numBytesHashed += 8;
+				break;
+			}
+			case '[':
+			case 'L': {
+#if defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES)
+				if (J9ROMFIELD_IS_NULL_RESTRICTED(result->field)) {
+					if (vm->internalVMFunctions->isFlattenableFieldFlattened(entry->clazz, result->field)) {
+						/*
+						 * Flattened fields are embedded into the parent object.
+						 * Push a child frame that reads from fieldOffset within the same object pointer.
+						 */
+						J9Class *flatClazz = vm->internalVMFunctions->getFlattenableFieldType(entry->clazz, result->field);
+						if (!pushChildFrame(vm, currentThread, &queue, entry, entry->objectPointer, flatClazz, fieldOffset)) {
+							goto oom;
+						}
+						continue;
+					}
+					/* Non-flattened null-restricted value object field. */
+					j9object_t fieldObject = objectAccessBarrier.inlineMixedObjectReadObject(currentThread, entry->objectPointer, fieldOffset);
+					if (NULL != fieldObject) {
+						J9Class *fieldClazz = J9OBJECT_CLAZZ(currentThread, fieldObject);
+						if (J9_ARE_ANY_BITS_SET(J9OBJECT_FLAGS_FROM_CLAZZ(currentThread, fieldObject), OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS)) {
+							I_32 storedHash = objectAccessBarrier.inlineMixedObjectReadI32(currentThread, fieldObject, fieldClazz->backfillOffset);
+							if (0 != storedHash) {
+								entry->hashValue = mix(entry->hashValue, (U_32)storedHash);
+								entry->numBytesHashed += 4;
+								break;
+							}
+						}
+						if (!pushChildFrame(vm, currentThread, &queue, entry, fieldObject, fieldClazz, J9VMTHREAD_OBJECT_HEADER_SIZE(currentThread))) {
+							goto oom;
+						}
+						continue;
+					}
+				} else
+#endif /* defined(J9VM_OPT_VALHALLA_FLATTENABLE_VALUE_TYPES) */
+				{
+					j9object_t fieldObject = objectAccessBarrier.inlineMixedObjectReadObject(currentThread, entry->objectPointer, fieldOffset);
+					if (NULL != fieldObject) {
+						J9Class *fieldClazz = J9OBJECT_CLAZZ(currentThread, fieldObject);
+						if (J9_ARE_ANY_BITS_SET(J9OBJECT_FLAGS_FROM_CLAZZ(currentThread, fieldObject), OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS)) {
+							/* Object has moved: use its stored hash if available. */
+							I_32 storedHash = 0;
+							if (J9CLASS_IS_ARRAY(fieldClazz)) {
+								storedHash = J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm)
+									? inlineIndexableObjectHashCodeCompressed(vm, fieldObject, fieldClazz)
+									: inlineIndexableObjectHashCodeFull(vm, fieldObject, fieldClazz);
+							} else {
+								storedHash = objectAccessBarrier.inlineMixedObjectReadI32(currentThread, fieldObject, fieldClazz->backfillOffset);
+							}
+							if (0 != storedHash) {
+								entry->hashValue = mix(entry->hashValue, (U_32)storedHash);
+								entry->numBytesHashed += 4;
+								break;
+							}
+							if (!pushChildFrame(vm, currentThread, &queue, entry, fieldObject, fieldClazz, J9VMTHREAD_OBJECT_HEADER_SIZE(currentThread))) {
+								goto oom;
+							}
+							continue;
+						} else if (J9_IS_J9CLASS_VALUETYPE(fieldClazz)) {
+							if (!pushChildFrame(vm, currentThread, &queue, entry, fieldObject, fieldClazz, J9VMTHREAD_OBJECT_HEADER_SIZE(currentThread))) {
+								goto oom;
+							}
+							continue;
+						} else {
+							U_32 datum = (U_32)inlineObjectHashCode(vm, fieldObject, oomOccurred);
+							if (*oomOccurred) {
+								goto oom;
+							}
+							entry->hashValue = mix(entry->hashValue, datum);
+							entry->numBytesHashed += 4;
+						}
+					}
+				}
+				break;
+			}
+			default:
+				/* Invalid field signature. Should assert but we are in util. */
+				break;
+			}
+
+			entry->currentField = vm->internalVMFunctions->fieldOffsetsNextDo(&entry->walkState);
 		}
 
-		hashValue = finalizeMurmur3Hash(hashValue, numBytesHashed);
-		/* Hash code for value types should not be zero. */
-		if (0 == hashValue) {
-			hashValue = 1;
-		}
-done:
-		if (oom) {
-			*oomOccurred = oom;
-		}
-		return hashValue;
+oom:
+		*oomOccurred = true;
+		return 0;
 	}
 #endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
 protected:
