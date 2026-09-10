@@ -134,6 +134,11 @@ addMemberNameToClass(J9VMThread *currentThread, j9object_t memberNameObject, j9o
 
 	J9MemberNameListNode *node = (J9MemberNameListNode *)pool_newElement(vm->memberNameListNodePool);
 
+	UDATA poolCount = pool_numElements(vm->memberNameListNodePool);
+	if (0 == (poolCount % 1000)) {
+		printf("memberNameListNodePool node count: %zu\n", (size_t)poolCount);
+	}
+
 	bool success = false;
 	if ((NULL != weakRef) && (NULL != node)) {
 		/* Initialize node and push it onto the front of the list. */
