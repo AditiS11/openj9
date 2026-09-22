@@ -3970,6 +3970,7 @@ typedef struct J9ClassLoader {
 	struct J9RAMClassFreeLists sub4gBlock;
 	struct J9RAMClassFreeLists frequentlyAccessedBlock;
 	struct J9RAMClassFreeLists inFrequentlyAccessedBlock;
+	struct J9RAMClassFreeLists coldInFrequentlyAccessedBlock;
 	struct J9HashTable* redefinedClasses;
 	struct J9NativeLibrary* librariesHead;
 	struct J9NativeLibrary* librariesTail;
