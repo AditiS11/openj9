@@ -2224,6 +2224,56 @@ dumpLoadedClassList(J9HookInterface **hookInterface, uintptr_t eventNum, void *e
 
 }
 
+#if defined(LINUX)
+/* Prints a breakdown of cold pool bytes by fragment type to stderr at JVM shutdown.
+ * Only fires when -XX:ClassMemoryDisclaim=ram (or =all) is active, because the
+ * counters are only incremented on that path.  Output format:
+ *
+ *   [ColdPool] callSites            :   1234567 bytes
+ *   [ColdPool] invokeCache/methTypes:    234567 bytes
+ *   ...
+ *   [ColdPool] TOTAL                :   2345678 bytes
+ *
+ * This lets us measure whether the cold pool is large enough to produce
+ * a meaningful RSS reduction across different benchmarks and configs.
+ */
+static void
+printColdPoolBreakdown(J9HookInterface **hookInterface, uintptr_t eventNum, void *eventData, void *userData)
+{
+	J9VMShutdownEvent *event = (J9VMShutdownEvent *)eventData;
+	J9JavaVM *vm = event->vmThread->javaVM;
+	PORT_ACCESS_FROM_JAVAVM(vm);
+
+	if (!J9_ARE_ANY_BITS_SET(vm->extendedRuntimeFlags3, J9_EXTENDED_RUNTIME3_DISCLAIM_RAM_CLASS_MEMORY)) {
+		return;
+	}
+
+	UDATA callSites      = vm->coldBytesCallSites;
+	UDATA invokeCache    = vm->coldBytesInvokeCache;       /* methodTypes when !OPENJDK_MH */
+	UDATA varHandle      = vm->coldBytesVarHandleMethodTypes;
+	UDATA staticSplit    = vm->coldBytesStaticSplitTable;
+	UDATA specialSplit   = vm->coldBytesSpecialSplitTable;
+	UDATA instDesc       = vm->coldBytesInstanceDescription;
+	UDATA flatCache      = vm->coldBytesFlattenedClassCache;
+	UDATA total          = callSites + invokeCache + varHandle
+	                     + staticSplit + specialSplit + instDesc + flatCache;
+
+	j9tty_err_printf("[ColdPool] callSites             : %10zu bytes\n", callSites);
+#if defined(J9VM_OPT_OPENJDK_METHODHANDLE)
+	j9tty_err_printf("[ColdPool] invokeCache            : %10zu bytes\n", invokeCache);
+#else /* defined(J9VM_OPT_OPENJDK_METHODHANDLE) */
+	j9tty_err_printf("[ColdPool] methodTypes            : %10zu bytes\n", invokeCache);
+	j9tty_err_printf("[ColdPool] varHandleMethodTypes   : %10zu bytes\n", varHandle);
+#endif /* defined(J9VM_OPT_OPENJDK_METHODHANDLE) */
+	j9tty_err_printf("[ColdPool] staticSplitTable       : %10zu bytes\n", staticSplit);
+	j9tty_err_printf("[ColdPool] specialSplitTable      : %10zu bytes\n", specialSplit);
+	j9tty_err_printf("[ColdPool] instanceDescription    : %10zu bytes\n", instDesc);
+	j9tty_err_printf("[ColdPool] flattenedClassCache    : %10zu bytes\n", flatCache);
+	j9tty_err_printf("[ColdPool] TOTAL                  : %10zu bytes  (%.2f MB)\n",
+	                 total, (double)total / (1024.0 * 1024.0));
+}
+#endif /* defined(LINUX) */
+
 /* Print out the internal version information for openj9 */
 static void
 j9print_internal_version(J9PortLibrary *portLib)
@@ -4312,13 +4362,23 @@ processVMArgsFromFirstToLast(J9JavaVM * vm)
 						return JNI_ERR;
 					}
 					if (0 == strncmp(disclaimOption, VMOPT_XXCLASSMEMORYDISCLAIM_ALL, strlen(VMOPT_XXCLASSMEMORYDISCLAIM_ALL))) {
-						/* TODO: Support others; only RAM Class is supported for the time being. */
-						vm->extendedRuntimeFlags3 |= J9_EXTENDED_RUNTIME3_DISCLAIM_RAM_CLASS_MEMORY;
-						j9port_control(J9PORT_CTLDATA_MEM_32BIT, J9PORT_MEM_32BIT_FLAGS_TMP_FILE_BACKED_VMEM);
-					} else if (0 == strncmp(disclaimOption, VMOPT_XXCLASSMEMORYDISCLAIM_RAM, strlen(VMOPT_XXCLASSMEMORYDISCLAIM_RAM))) {
-						vm->extendedRuntimeFlags3 |= J9_EXTENDED_RUNTIME3_DISCLAIM_RAM_CLASS_MEMORY;
-						j9port_control(J9PORT_CTLDATA_MEM_32BIT, J9PORT_MEM_32BIT_FLAGS_TMP_FILE_BACKED_VMEM);
-					}  else if (0 == strncmp(disclaimOption, VMOPT_XXCLASSMEMORYDISCLAIM_ROM, strlen(VMOPT_XXCLASSMEMORYDISCLAIM_ROM))) {
+							/* TODO: Support others; only RAM Class is supported for the time being. */
+							vm->extendedRuntimeFlags3 |= J9_EXTENDED_RUNTIME3_DISCLAIM_RAM_CLASS_MEMORY;
+							j9port_control(J9PORT_CTLDATA_MEM_32BIT, J9PORT_MEM_32BIT_FLAGS_TMP_FILE_BACKED_VMEM);
+							{
+								J9HookInterface **vmHooks = vm->internalVMFunctions->getVMHookInterface(vm);
+								(*vmHooks)->J9HookRegisterWithCallSite(vmHooks, J9HOOK_VM_SHUTTING_DOWN,
+									printColdPoolBreakdown, OMR_GET_CALLSITE(), NULL);
+							}
+						} else if (0 == strncmp(disclaimOption, VMOPT_XXCLASSMEMORYDISCLAIM_RAM, strlen(VMOPT_XXCLASSMEMORYDISCLAIM_RAM))) {
+							vm->extendedRuntimeFlags3 |= J9_EXTENDED_RUNTIME3_DISCLAIM_RAM_CLASS_MEMORY;
+							j9port_control(J9PORT_CTLDATA_MEM_32BIT, J9PORT_MEM_32BIT_FLAGS_TMP_FILE_BACKED_VMEM);
+							{
+								J9HookInterface **vmHooks = vm->internalVMFunctions->getVMHookInterface(vm);
+								(*vmHooks)->J9HookRegisterWithCallSite(vmHooks, J9HOOK_VM_SHUTTING_DOWN,
+									printColdPoolBreakdown, OMR_GET_CALLSITE(), NULL);
+							}
+						}  else if (0 == strncmp(disclaimOption, VMOPT_XXCLASSMEMORYDISCLAIM_ROM, strlen(VMOPT_XXCLASSMEMORYDISCLAIM_ROM))) {
 						/* vm->extendedRuntimeFlags3 |= J9_EXTENDED_RUNTIME3_DISCLAIM_ROM_CLASS_MEMORY; */
 						j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_VM_UNSUPPORTED_OPTION, VMOPT_XXCLASSMEMORYDISCLAIM VMOPT_XXCLASSMEMORYDISCLAIM_ROM);
 						return JNI_ERR;
