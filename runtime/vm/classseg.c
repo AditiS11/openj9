@@ -113,20 +113,26 @@ allocateClassMemorySegment(J9JavaVM *javaVM, UDATA requiredSize, UDATA segmentTy
 		omrthread_monitor_enter(segmentMutex);
 	}
 
+	if (J9_ARE_ANY_BITS_SET(segmentType, MEMORY_TYPE_ROM_CLASS)) {
+		if (J9_ARE_ANY_BITS_SET(javaVM->extendedRuntimeFlags3, J9_EXTENDED_RUNTIME3_DISCLAIM_ROM_CLASS_MEMORY)) {
+			segmentType |= MEMORY_TYPE_DISCLAIMABLE_TO_FILE;
+		}
+	}
+
 	appropriateSize = calculateAppropriateSegmentSize(javaVM, requiredSize, segmentType, classLoader, allocationIncrement);
 	memorySegment = allocateMemorySegmentInList(javaVM, javaVM->classMemorySegments, appropriateSize, segmentType, J9MEM_CATEGORY_CLASSES);
 
-	 if (NULL != memorySegment) {
+	if (NULL != memorySegment) {
 		memorySegment->classLoader = classLoader;
 		memorySegment->nextSegmentInClassLoader = classLoader->classSegments;
 		classLoader->classSegments = memorySegment;
-	}
 
-	if (J9_ARE_ANY_BITS_SET(segmentType, MEMORY_TYPE_DISCLAIMABLE_TO_FILE)) {
-		if (J9_ARE_ANY_BITS_SET(segmentType, MEMORY_TYPE_RAM_CLASS)) {
-			javaVM->disclaimableRAMSegmentCount += 1;
-		} else {
-			javaVM->disclaimableROMSegmentCount += 1;
+		if (J9_ARE_ANY_BITS_SET(segmentType, MEMORY_TYPE_DISCLAIMABLE_TO_FILE)) {
+			if (J9_ARE_ANY_BITS_SET(segmentType, MEMORY_TYPE_RAM_CLASS)) {
+				javaVM->disclaimableRAMSegmentCount += 1;
+			} else {
+				javaVM->disclaimableROMSegmentCount += 1;
+			}
 		}
 	}
 
