@@ -117,7 +117,8 @@ typedef struct J9RAMClassFreeListLargeBlock {
 typedef enum SegmentKind {
 	SK_SUB4G,
 	SK_ABOVE4G_FREQUENTLY_ACCESSED,
-	SK_ABOVE4G_INFREQUENTLY_ACCESSED
+	SK_ABOVE4G_INFREQUENTLY_ACCESSED,
+	SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD
 } SegmentKind;
 
 typedef struct RAMClassAllocationRequest {
@@ -3173,7 +3174,7 @@ fail:
 #if defined(LINUXPPC)
 			allocationRequests[RAM_INSTANCE_DESCRIPTION_FRAGMENT].segmentKind = SK_SUB4G;
 #else /* defined(LINUXPPC) */
-			allocationRequests[RAM_INSTANCE_DESCRIPTION_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED;
+			allocationRequests[RAM_INSTANCE_DESCRIPTION_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD;
 #endif /* defined(LINUXPPC) */
 
 			/* iTable fragment */
@@ -3213,7 +3214,7 @@ fail:
 #if defined(LINUXPPC)
 			allocationRequests[RAM_CALL_SITES_FRAGMENT].segmentKind = SK_SUB4G;
 #else /* defined(LINUXPPC) */
-			allocationRequests[RAM_CALL_SITES_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED;
+			allocationRequests[RAM_CALL_SITES_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD;
 #endif /* defined(LINUXPPC) */
 
 #if defined(J9VM_OPT_OPENJDK_METHODHANDLE)
@@ -3225,7 +3226,7 @@ fail:
 #if defined(LINUXPPC)
 			allocationRequests[RAM_INVOKE_CACHE_FRAGMENT].segmentKind = SK_SUB4G;
 #else /* defined(LINUXPPC) */
-			allocationRequests[RAM_INVOKE_CACHE_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED;
+			allocationRequests[RAM_INVOKE_CACHE_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD;
 #endif /* defined(LINUXPPC) */
 #else /* defined(J9VM_OPT_OPENJDK_METHODHANDLE) */
 			/* method types fragment */
@@ -3236,7 +3237,7 @@ fail:
 #if defined(LINUXPPC)
 			allocationRequests[RAM_METHOD_TYPES_FRAGMENT].segmentKind = SK_SUB4G;
 #else /* defined(LINUXPPC) */
-			allocationRequests[RAM_METHOD_TYPES_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED;
+			allocationRequests[RAM_METHOD_TYPES_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD;
 #endif /* defined(LINUXPPC) */
 			/* varhandle method types fragment */
 			allocationRequests[RAM_VARHANDLE_METHOD_TYPES_FRAGMENT].prefixSize = 0;
@@ -3246,7 +3247,7 @@ fail:
 #if defined(LINUXPPC)
 			allocationRequests[RAM_VARHANDLE_METHOD_TYPES_FRAGMENT].segmentKind = SK_SUB4G;
 #else /* defined(LINUXPPC) */
-			allocationRequests[RAM_VARHANDLE_METHOD_TYPES_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED;
+			allocationRequests[RAM_VARHANDLE_METHOD_TYPES_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD;
 #endif /* defined(LINUXPPC) */
 #endif /* defined(J9VM_OPT_OPENJDK_METHODHANDLE) */
 
@@ -3258,7 +3259,7 @@ fail:
 #if defined(LINUXPPC)
 			allocationRequests[RAM_STATIC_SPLIT_TABLE_FRAGMENT].segmentKind = SK_SUB4G;
 #else /* defined(LINUXPPC) */
-			allocationRequests[RAM_STATIC_SPLIT_TABLE_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED;
+			allocationRequests[RAM_STATIC_SPLIT_TABLE_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD;
 #endif /* defined(LINUXPPC) */
 
 			/* special split table fragment */
@@ -3269,7 +3270,7 @@ fail:
 #if defined(LINUXPPC)
 			allocationRequests[RAM_SPECIAL_SPLIT_TABLE_FRAGMENT].segmentKind = SK_SUB4G;
 #else /* defined(LINUXPPC) */
-			allocationRequests[RAM_SPECIAL_SPLIT_TABLE_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED;
+			allocationRequests[RAM_SPECIAL_SPLIT_TABLE_FRAGMENT].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD;
 #endif /* defined(LINUXPPC) */
 
 #if defined(J9VM_OPT_VALHALLA_STRICT_FIELDS)
@@ -3285,7 +3286,7 @@ fail:
 #if defined(LINUXPPC)
 			allocationRequests[RAM_CLASS_FLATTENED_CLASS_CACHE].segmentKind = SK_SUB4G;
 #else /* defined(LINUXPPC) */
-			allocationRequests[RAM_CLASS_FLATTENED_CLASS_CACHE].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED;
+			allocationRequests[RAM_CLASS_FLATTENED_CLASS_CACHE].segmentKind = SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD;
 #endif /* defined(LINUXPPC) */
 #endif /* defined(J9VM_OPT_VALHALLA_STRICT_FIELDS) */
 
@@ -3352,6 +3353,7 @@ fail:
 					memcpy(ramClass->flattenedClassCache, flattenedClassCache, flattenedClassCacheAllocSize);
 				}
 #endif /* defined(J9VM_OPT_VALHALLA_STRICT_FIELDS) */
+
 			}
 		}
 
@@ -4519,6 +4521,8 @@ allocateRemainingFragments(RAMClassAllocationRequest *requests, UDATA allocation
 		UDATA memoryType = MEMORY_TYPE_RAM_CLASS;
 		if (SK_SUB4G == segmentKind) {
 			memoryType |= MEMORY_TYPE_RAM_CLASS_SUB4G;
+		}
+		if (SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD == segmentKind) {
 			/* For now, only sub4g memory will be disclaimed. This will be expanded in the future. */
 			if (J9_ARE_ANY_BITS_SET(javaVM->extendedRuntimeFlags3, J9_EXTENDED_RUNTIME3_DISCLAIM_RAM_CLASS_MEMORY)) {
 				memoryType |= MEMORY_TYPE_DISCLAIMABLE_TO_FILE;
@@ -4673,7 +4677,8 @@ internalAllocateRAMClass(J9JavaVM *javaVM, J9ClassLoader *classLoader, RAMClassA
 	if (isNotLoadedByAnonClassLoader) {
 		dummyHead.next = requests;
 		prev = &dummyHead;
-		for (request = requests; NULL != request; request = request->next) {
+		request = requests;
+		while (NULL != request) {
 			if (SK_SUB4G == request->segmentKind) {
 				allocateFreeListBlock(
 						request, classLoader, prev, &classLoader->sub4gBlock,
@@ -4686,8 +4691,17 @@ internalAllocateRAMClass(J9JavaVM *javaVM, J9ClassLoader *classLoader, RAMClassA
 				allocateFreeListBlock(
 						request, classLoader, prev, &classLoader->inFrequentlyAccessedBlock,
 						classLoader->inFrequentlyAccessedBlock.ramClassUDATABlockFreeList);
+			} else if (SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD == request->segmentKind) {
+				allocateFreeListBlock(
+						request, classLoader, prev, &classLoader->coldInFrequentlyAccessedBlock,
+						classLoader->coldInFrequentlyAccessedBlock.ramClassUDATABlockFreeList);
 			}
-			prev = request;
+			if (prev->next == request) {
+				prev = request;
+				request = request->next;
+			} else {
+				request = prev->next;
+			}
 		}
 		requests = dummyHead.next;
 	}
@@ -4716,6 +4730,12 @@ internalAllocateRAMClass(J9JavaVM *javaVM, J9ClassLoader *classLoader, RAMClassA
 			memoryAllocationSuccess = allocateRemainingFragments(
 					requests, allocationRequestCount, javaVM, classLoader, allocationRequests, &classLoader->inFrequentlyAccessedBlock,
 					classLoader->inFrequentlyAccessedBlock.ramClassUDATABlockFreeList, SK_ABOVE4G_INFREQUENTLY_ACCESSED);
+			if (!memoryAllocationSuccess) {
+				return NULL;
+			}
+			memoryAllocationSuccess = allocateRemainingFragments(
+					requests, allocationRequestCount, javaVM, classLoader, allocationRequests, &classLoader->coldInFrequentlyAccessedBlock,
+					classLoader->coldInFrequentlyAccessedBlock.ramClassUDATABlockFreeList, SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD);
 
 			if (!memoryAllocationSuccess) {
 				return NULL;
