@@ -3961,6 +3961,7 @@ typedef struct J9ClassLoader {
 	struct J9RAMClassFreeLists sub4gBlock;
 	struct J9RAMClassFreeLists frequentlyAccessedBlock;
 	struct J9RAMClassFreeLists inFrequentlyAccessedBlock;
+	struct J9RAMClassFreeLists coldInFrequentlyAccessedBlock;
 	struct J9HashTable* redefinedClasses;
 	struct J9NativeLibrary* librariesHead;
 	struct J9NativeLibrary* librariesTail;
@@ -6960,6 +6961,18 @@ typedef struct J9JavaVM {
 #endif /* JAVA_SPEC_VERSION >= 24 */
 	UDATA disclaimableRAMSegmentCount;
 	UDATA disclaimableROMSegmentCount;
+	/* Cold fragment pool byte counters — updated atomically on every class load.
+	 * Printed at JVM shutdown when -XX:ClassMemoryDisclaim=ram is active so that
+	 * the total disclaimable cold pool size can be measured per workload.
+	 * Each counter tracks the alignedSize bytes allocated for that fragment type
+	 * across all live classes. */
+	volatile UDATA coldBytesCallSites;
+	volatile UDATA coldBytesInvokeCache;        /* also covers methodTypes (mutually exclusive) */
+	volatile UDATA coldBytesVarHandleMethodTypes;
+	volatile UDATA coldBytesStaticSplitTable;
+	volatile UDATA coldBytesSpecialSplitTable;
+	volatile UDATA coldBytesInstanceDescription;
+	volatile UDATA coldBytesFlattenedClassCache;
 #if defined(OMR_THR_YIELD_ALG)
 	omrthread_t cpuUtilCalcThread;
 	UDATA cpuUtilCacheInterval; /* This is a number of seconds. */
