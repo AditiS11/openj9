@@ -78,6 +78,36 @@
 #define FORMAT_SIZE_DECIMAL "%*zu"
 #define FORMAT_SIZE_HEX "0x%.*zX"
 
+/* Cold RAM class fragment types whose memory is summed per fragment type in the javacore. */
+typedef enum ColdFragKind {
+	CF_CALL_SITES,
+	CF_INVOKE_CACHE,
+	CF_METHOD_TYPES,
+	CF_VARHANDLE_METHOD_TYPES,
+	CF_STATIC_SPLIT,
+	CF_SPECIAL_SPLIT,
+	CF_FLATTENED_CACHE,
+	CF_COUNT
+} ColdFragKind;
+
+static const char * const coldFragNames[CF_COUNT] = {
+	"callSites", "invokeCache", "methodTypes",
+	"varHandleMethodTypes", "staticSplitTable", "specialSplitTable", "flattenedClassCache"
+};
+
+typedef struct ColdFragTotals {
+	UDATA count[CF_COUNT];
+	UDATA bytes[CF_COUNT];
+} ColdFragTotals;
+
+#define COLD_ADD(kind, byteExpr) \
+	do { \
+		if (NULL != totals) { \
+			totals->count[kind] += 1; \
+			totals->bytes[kind] += (byteExpr); \
+		} \
+	} while (0)
+
 #define HIST_TYPE_GC 1
 #define HIST_TYPE_CT 2
 
@@ -332,6 +362,8 @@ private :
 	void        writeGPValue                 (const char* prefix, const char* name, U_32 kind, void* value);
 	void        writeJitMethod               (J9VMThread* vmThread);
 	void        writeSegments                (J9MemorySegmentList* list, BOOLEAN isCodeCacheSegment);
+	void        writeDisclaimableRAMClassSegments(void);
+	void        writeRAMClassSegmentDetail   (J9MemorySegment *segment, ColdFragTotals *totals);
 	void        writeTraceHistory            (U_32 type);
 	void        writeGCHistoryLines          (UtThreadData** thr, UtTracePointIterator* iterator, const char* typePrefix);
 	void        writeDeadLocks               (void);
@@ -1640,6 +1672,9 @@ JavaCoreDumpWriter::writeMemorySection(void)
 		SEGMENT_HEADER
 	);
 	writeSegments(_VirtualMachine->memorySegments, false);
+
+	/* Write disclaimable RAM class segments sub-section */
+	writeDisclaimableRAMClassSegments();
 
 	/* Write the class memory segments sub-section */
 	_OutputStream.writeCharacters(
@@ -4186,6 +4221,326 @@ JavaCoreDumpWriter::writeSegments(J9MemorySegmentList* list, BOOLEAN isCodeCache
 	_OutputStream.writeCharacters(" (");
 	_OutputStream.writeVPrintf(FORMAT_SIZE_HEX, sizeof(void *) * 2, freeTotal);
 	_OutputStream.writeCharacters(")\n");
+}
+
+void
+JavaCoreDumpWriter::writeRAMClassSegmentDetail(J9MemorySegment *segment, ColdFragTotals *totals)
+{
+	_OutputStream.writeCharacters("1STRAMCLSSEG   ");
+	_OutputStream.writePointer(segment, true);
+	_OutputStream.writeCharacters(" ");
+	_OutputStream.writePointer(segment->heapBase, true);
+	_OutputStream.writeCharacters(" ");
+	_OutputStream.writePointer(segment->heapAlloc, true);
+	_OutputStream.writeCharacters(" ");
+	_OutputStream.writePointer(segment->heapTop, true);
+	_OutputStream.writeCharacters(" ");
+	_OutputStream.writeInteger(segment->type, "0x%08zX");
+	_OutputStream.writeCharacters(" ");
+	_OutputStream.writeVPrintf(FORMAT_SIZE_HEX, sizeof(void *) * 2, segment->size);
+	_OutputStream.writeCharacters("\n");
+
+	if (avoidLocks()) {
+		return;
+	}
+
+	UDATA segLo = (UDATA)segment->heapBase;
+	UDATA segHi = (UDATA)segment->heapTop;
+	J9ClassLoader *classLoader = segment->classLoader;
+
+	if (NULL == classLoader) {
+		return;
+	}
+
+	J9ClassWalkState walkState;
+	J9Class *clazz = _VirtualMachine->internalVMFunctions->allClassesStartDo(
+		&walkState, _VirtualMachine, classLoader);
+
+	while (NULL != clazz) {
+		char fragmentNames[512] = {0};
+		BOOLEAN hasFragmentHere = FALSE;
+
+		if ((NULL != clazz->ramStatics)
+			&& ((UDATA)clazz->ramStatics >= segLo)
+			&& ((UDATA)clazz->ramStatics < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "ramStatics ");
+		}
+
+		if ((NULL != clazz->ramConstantPool)
+			&& ((UDATA)clazz->ramConstantPool >= segLo)
+			&& ((UDATA)clazz->ramConstantPool < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "ramConstantPool ");
+		}
+
+		if ((NULL != clazz->instanceDescription)
+			&& (0 == ((UDATA)clazz->instanceDescription & 1))
+			&& ((UDATA)clazz->instanceDescription >= segLo)
+			&& ((UDATA)clazz->instanceDescription < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "instanceDescription ");
+		}
+
+#if defined(J9VM_GC_LEAF_BITS)
+		if ((NULL != clazz->instanceLeafDescription)
+			&& (0 == ((UDATA)clazz->instanceLeafDescription & 1))
+			&& ((UDATA)clazz->instanceLeafDescription >= segLo)
+			&& ((UDATA)clazz->instanceLeafDescription < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "instanceLeafDescription ");
+		}
+#endif /* defined(J9VM_GC_LEAF_BITS) */
+
+		if ((NULL != clazz->callSites)
+			&& ((UDATA)clazz->callSites >= segLo)
+			&& ((UDATA)clazz->callSites < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "callSites ");
+			COLD_ADD(CF_CALL_SITES, (UDATA)clazz->romClass->callSiteCount * sizeof(UDATA));
+		}
+
+#if defined(J9VM_OPT_OPENJDK_METHODHANDLE)
+		if ((NULL != clazz->invokeCache)
+			&& ((UDATA)clazz->invokeCache >= segLo)
+			&& ((UDATA)clazz->invokeCache < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "invokeCache ");
+			COLD_ADD(CF_INVOKE_CACHE, (UDATA)clazz->romClass->invokeCacheCount * sizeof(UDATA));
+		}
+#else /* defined(J9VM_OPT_OPENJDK_METHODHANDLE) */
+		if ((NULL != clazz->methodTypes)
+			&& ((UDATA)clazz->methodTypes >= segLo)
+			&& ((UDATA)clazz->methodTypes < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "methodTypes ");
+			COLD_ADD(CF_METHOD_TYPES, (UDATA)clazz->romClass->methodTypeCount * sizeof(UDATA));
+		}
+		if ((NULL != clazz->varHandleMethodTypes)
+			&& ((UDATA)clazz->varHandleMethodTypes >= segLo)
+			&& ((UDATA)clazz->varHandleMethodTypes < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "varHandleMethodTypes ");
+			COLD_ADD(CF_VARHANDLE_METHOD_TYPES, (UDATA)clazz->romClass->varHandleMethodTypeCount * sizeof(UDATA));
+		}
+#endif /* defined(J9VM_OPT_OPENJDK_METHODHANDLE) */
+
+		if ((NULL != clazz->staticSplitMethodTable)
+			&& ((UDATA)clazz->staticSplitMethodTable >= segLo)
+			&& ((UDATA)clazz->staticSplitMethodTable < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "staticSplitTable ");
+			COLD_ADD(CF_STATIC_SPLIT, (UDATA)clazz->romClass->staticSplitMethodRefCount * sizeof(J9Method *));
+		}
+
+		if ((NULL != clazz->specialSplitMethodTable)
+			&& ((UDATA)clazz->specialSplitMethodTable >= segLo)
+			&& ((UDATA)clazz->specialSplitMethodTable < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "specialSplitTable ");
+			COLD_ADD(CF_SPECIAL_SPLIT, (UDATA)clazz->romClass->specialSplitMethodRefCount * sizeof(J9Method *));
+		}
+
+#if defined(J9VM_OPT_VALHALLA_STRICT_FIELDS)
+		if ((NULL != clazz->flattenedClassCache)
+			&& ((UDATA)clazz->flattenedClassCache >= segLo)
+			&& ((UDATA)clazz->flattenedClassCache < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "flattenedClassCache ");
+			COLD_ADD(CF_FLATTENED_CACHE,
+				sizeof(J9FlattenedClassCache)
+				+ (sizeof(J9FlattenedClassCacheEntry) * clazz->flattenedClassCache->numberOfEntries));
+		}
+#endif /* defined(J9VM_OPT_VALHALLA_STRICT_FIELDS) */
+
+		if ((NULL != clazz->ramMethods)
+			&& ((UDATA)clazz->ramMethods >= segLo)
+			&& ((UDATA)clazz->ramMethods < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "ramMethods ");
+		}
+
+		if ((NULL != clazz->superclasses)
+			&& ((UDATA)clazz->superclasses >= segLo)
+			&& ((UDATA)clazz->superclasses < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "superclasses ");
+		}
+
+		if ((NULL != clazz->iTable)
+			&& ((UDATA)clazz->iTable >= segLo)
+			&& ((UDATA)clazz->iTable < segHi)
+		) {
+			hasFragmentHere = TRUE;
+			strcat(fragmentNames, "iTable ");
+		}
+
+		if (hasFragmentHere) {
+			_OutputStream.writeCharacters("2STRAMCLSNAME  ");
+			_OutputStream.writeCharacters(J9ROMCLASS_CLASSNAME(clazz->romClass));
+			_OutputStream.writeCharacters("(");
+			_OutputStream.writePointer(clazz);
+			_OutputStream.writeCharacters(") [");
+			_OutputStream.writeCharacters(fragmentNames);
+			_OutputStream.writeCharacters("]\n");
+		}
+
+		clazz = _VirtualMachine->internalVMFunctions->allClassesNextDo(&walkState);
+	}
+
+	_VirtualMachine->internalVMFunctions->allClassesEndDo(&walkState);
+}
+
+/**************************************************************************************************/
+/*                                                                                                */
+/* JavaCoreDumpWriter::writeDisclaimableRAMClassSegments() method implementation                  */
+/*                                                                                                */
+/**************************************************************************************************/
+void
+JavaCoreDumpWriter::writeDisclaimableRAMClassSegments(void)
+{
+	J9MemorySegment *segmentList = _VirtualMachine->classMemorySegments
+		? _VirtualMachine->classMemorySegments->nextSegment
+		: NULL;
+	UDATA totalDisclaimableSize = 0;
+	UDATA disclaimableSegmentCount = 0;
+	UDATA totalNonDisclaimableSize = 0;
+	UDATA nonDisclaimableSegmentCount = 0;
+	ColdFragTotals coldTotals;
+	memset(&coldTotals, 0, sizeof(coldTotals));
+	const int decimalLength = (sizeof(void *) == 4) ? 10 : 20;
+
+	for (J9MemorySegment *scan = segmentList; NULL != scan; scan = scan->nextSegment) {
+		if (J9_ARE_ALL_BITS_SET(scan->type, MEMORY_TYPE_RAM_CLASS | MEMORY_TYPE_DISCLAIMABLE_TO_FILE)) {
+			totalDisclaimableSize += (UDATA)scan->heapTop - (UDATA)scan->heapBase;
+			disclaimableSegmentCount += 1;
+		} else if (J9_ARE_ALL_BITS_SET(scan->type, MEMORY_TYPE_RAM_CLASS)) {
+			totalNonDisclaimableSize += (UDATA)scan->heapTop - (UDATA)scan->heapBase;
+			nonDisclaimableSegmentCount += 1;
+		}
+	}
+
+	/* Disclaimable RAM Class Segments */
+	_OutputStream.writeCharacters(
+		"NULL\n"
+		"1STSEGTYPE     Disclaimable RAM Class Segments (SK_ABOVE4G_INFREQUENTLY_ACCESSED_COLD)\n"
+	);
+	_OutputStream.writeCharacters("1STSEGSUMMARY  Segment count: ");
+	_OutputStream.writeVPrintf(FORMAT_SIZE_DECIMAL, decimalLength, disclaimableSegmentCount);
+	_OutputStream.writeCharacters("  Total disclaimable memory: ");
+	_OutputStream.writeVPrintf(FORMAT_SIZE_DECIMAL, decimalLength, totalDisclaimableSize);
+	_OutputStream.writeCharacters(" (");
+	_OutputStream.writeVPrintf(FORMAT_SIZE_HEX, sizeof(void *) * 2, totalDisclaimableSize);
+	_OutputStream.writeCharacters(")\n");
+
+	if (0 == disclaimableSegmentCount) {
+		_OutputStream.writeCharacters(
+			"NULL           No disclaimable RAM class segments found"
+			" (requires -XX:+DisclaimRAMClassMemory on Linux)\n");
+	} else {
+		_OutputStream.writeCharacters(SEGMENT_HEADER);
+		for (J9MemorySegment *seg = segmentList; NULL != seg; seg = seg->nextSegment) {
+			if (J9_ARE_ALL_BITS_SET(seg->type, MEMORY_TYPE_RAM_CLASS | MEMORY_TYPE_DISCLAIMABLE_TO_FILE)) {
+				writeRAMClassSegmentDetail(seg, &coldTotals);
+			}
+		}
+
+		/* Cold fragment memory by fragment type */
+		UDATA usedBytes = 0;
+		_OutputStream.writeCharacters(
+			"NULL\n"
+			"1STCOLDFRAGHD  Cold Fragment Memory by Type\n"
+		);
+		for (int k = 0; k < CF_COUNT; k++) {
+			usedBytes += coldTotals.bytes[k];
+			_OutputStream.writeCharacters("2STCOLDFRAG    ");
+			_OutputStream.writeVPrintf("%-24s", coldFragNames[k]);
+			_OutputStream.writeCharacters(" count: ");
+			_OutputStream.writeVPrintf(FORMAT_SIZE_DECIMAL, decimalLength, coldTotals.count[k]);
+			_OutputStream.writeCharacters("  bytes: ");
+			_OutputStream.writeVPrintf(FORMAT_SIZE_DECIMAL, decimalLength, coldTotals.bytes[k]);
+			_OutputStream.writeCharacters(" (");
+			_OutputStream.writeVPrintf(FORMAT_SIZE_HEX, sizeof(void *) * 2, coldTotals.bytes[k]);
+			_OutputStream.writeCharacters(")\n");
+		}
+
+		UDATA freeBytes = (totalDisclaimableSize > usedBytes) ? (totalDisclaimableSize - usedBytes) : 0;
+		_OutputStream.writeCharacters("NULL\n");
+		_OutputStream.writeCharacters("1STCOLDFRAGUSE ");
+		_OutputStream.writeCharacters("Total fragment memory in use: ");
+		_OutputStream.writeVPrintf(FORMAT_SIZE_DECIMAL, decimalLength, usedBytes);
+		_OutputStream.writeCharacters(" (");
+		_OutputStream.writeVPrintf(FORMAT_SIZE_HEX, sizeof(void *) * 2, usedBytes);
+		_OutputStream.writeCharacters(")\n");
+
+		_OutputStream.writeCharacters("1STCOLDFRAGSEG ");
+		_OutputStream.writeCharacters("Total segment memory:         ");
+		_OutputStream.writeVPrintf(FORMAT_SIZE_DECIMAL, decimalLength, totalDisclaimableSize);
+		_OutputStream.writeCharacters(" (");
+		_OutputStream.writeVPrintf(FORMAT_SIZE_HEX, sizeof(void *) * 2, totalDisclaimableSize);
+		_OutputStream.writeCharacters(")\n");
+
+		_OutputStream.writeCharacters("1STCOLDFRAGFRE ");
+		_OutputStream.writeCharacters("Total memory free:            ");
+		_OutputStream.writeVPrintf(FORMAT_SIZE_DECIMAL, decimalLength, freeBytes);
+		_OutputStream.writeCharacters(" (");
+		_OutputStream.writeVPrintf(FORMAT_SIZE_HEX, sizeof(void *) * 2, freeBytes);
+		_OutputStream.writeCharacters(")\n");
+
+		_OutputStream.writeCharacters("NULL\n");
+		_OutputStream.writeCharacters("1STRAMCLSTOTAL ");
+		_OutputStream.writeCharacters("Total disclaimable memory:    ");
+		_OutputStream.writeVPrintf(FORMAT_SIZE_DECIMAL, decimalLength, totalDisclaimableSize);
+		_OutputStream.writeCharacters(" (");
+		_OutputStream.writeVPrintf(FORMAT_SIZE_HEX, sizeof(void *) * 2, totalDisclaimableSize);
+		_OutputStream.writeCharacters(")\n");
+	}
+
+	/* Non-Disclaimable RAM Class Segments */
+	_OutputStream.writeCharacters(
+		"NULL\n"
+		"1STSEGTYPE     Non-Disclaimable RAM Class Segments\n"
+	);
+	_OutputStream.writeCharacters("1STSEGSUMMARY  Segment count: ");
+	_OutputStream.writeVPrintf(FORMAT_SIZE_DECIMAL, decimalLength, nonDisclaimableSegmentCount);
+	_OutputStream.writeCharacters("  Total non-disclaimable memory: ");
+	_OutputStream.writeVPrintf(FORMAT_SIZE_DECIMAL, decimalLength, totalNonDisclaimableSize);
+	_OutputStream.writeCharacters(" (");
+	_OutputStream.writeVPrintf(FORMAT_SIZE_HEX, sizeof(void *) * 2, totalNonDisclaimableSize);
+	_OutputStream.writeCharacters(")\n");
+
+	if (0 == nonDisclaimableSegmentCount) {
+		_OutputStream.writeCharacters(
+			"NULL           No non-disclaimable RAM class segments found\n");
+	} else {
+		_OutputStream.writeCharacters(SEGMENT_HEADER);
+		for (J9MemorySegment *seg = segmentList; NULL != seg; seg = seg->nextSegment) {
+			if (J9_ARE_ALL_BITS_SET(seg->type, MEMORY_TYPE_RAM_CLASS)
+				&& !J9_ARE_ALL_BITS_SET(seg->type, MEMORY_TYPE_DISCLAIMABLE_TO_FILE)
+			) {
+				writeRAMClassSegmentDetail(seg, NULL);
+			}
+		}
+		_OutputStream.writeCharacters("NULL\n");
+		_OutputStream.writeCharacters("1STRAMCLSTOTAL Total non-disclaimable RAM class memory: ");
+		_OutputStream.writeVPrintf(FORMAT_SIZE_DECIMAL, decimalLength, totalNonDisclaimableSize);
+		_OutputStream.writeCharacters(" (");
+		_OutputStream.writeVPrintf(FORMAT_SIZE_HEX, sizeof(void *) * 2, totalNonDisclaimableSize);
+		_OutputStream.writeCharacters(")\n");
+	}
 }
 
 /**************************************************************************************************/
