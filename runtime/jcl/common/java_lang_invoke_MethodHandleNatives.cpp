@@ -111,21 +111,37 @@ addMemberNameToClass(J9VMThread *currentThread, j9object_t memberNameObject, j9o
 
 	jobject weakRef = vmFuncs->j9jni_createGlobalRef((JNIEnv*)currentThread, memberNameObject, JNI_TRUE);
 
+	/* Dead Nodes are collected during pruning. Their weakRefs and pool slots are freed after the lock is released. */
+	J9MemberNameListNode *deadNodes = NULL;
+
 	omrthread_monitor_enter(vm->memberNameListsMutex);
 
 	if (J9_ARE_ALL_BITS_SET(j9clazz->classFlags, J9ClassNeedToPruneMemberNames)) {
 		VM_AtomicSupport::bitAndU32((volatile uint32_t*)&j9clazz->classFlags, ~(uint32_t)J9ClassNeedToPruneMemberNames);
 
 		/* Remove all entries of memberNames for which the JNI weak ref has been cleared. */
+		/* Unlink the dead nodes from the list under the lock.
+		 * Defer j9jni_deleteGlobalRef and pool_removeElement until after
+		 * the lock is released.
+		 */
 		J9MemberNameListNode **cur = &j9clazz->memberNames;
 		while (NULL != *cur) {
 			j9object_t obj = J9_JNI_UNWRAP_REFERENCE((*cur)->memberName);
 			if (NULL == obj) {
 				/* The MemberName has been collected. Remove this entry. */
-				J9MemberNameListNode *next = (*cur)->next;
-				vmFuncs->j9jni_deleteGlobalRef((JNIEnv*)currentThread, (*cur)->memberName, JNI_TRUE);
-				pool_removeElement(vm->memberNameListNodePool, *cur);
-				*cur = next;
+				//J9MemberNameListNode *next = (*cur)->next;
+				//vmFuncs->j9jni_deleteGlobalRef((JNIEnv*)currentThread, (*cur)->memberName, JNI_TRUE);
+				//pool_removeElement(vm->memberNameListNodePool, *cur);
+				//*cur = next;
+				
+				/* The MemberName has been collected. Unlink this node
+				 * and stask it in the local deadNodes list for cleanup
+				 * once the lock is released.
+				 */
+				J9MemberNameListNode *dead = *cur;
+				*cur = dead->next;
+				dead->next = deadNodes;
+				deadNodes = dead;
 			} else {
 				cur = &(*cur)->next;
 			}
@@ -145,14 +161,40 @@ addMemberNameToClass(J9VMThread *currentThread, j9object_t memberNameObject, j9o
 		/* Failed to allocate either weakRef or node. */
 		if (NULL != node) {
 			pool_removeElement(vm->memberNameListNodePool, node);
-		}
-		if (NULL != weakRef) {
-			vmFuncs->j9jni_deleteGlobalRef((JNIEnv*)currentThread, weakRef, JNI_TRUE);
+		//}
+		//if (NULL != weakRef) {
+			//vmFuncs->j9jni_deleteGlobalRef((JNIEnv*)currentThread, weakRef, JNI_TRUE);
+			node = NULL;
 		}
 		vmFuncs->setNativeOutOfMemoryError(currentThread, 0, 0);
 	}
 
 	omrthread_monitor_exit(vm->memberNameListsMutex);
+
+	/* 
+	 * Free dead nodes outside the lock in two passes.
+	 * Firstly delete all JNI weak refs without holding any lock.
+	 * Return all dead nodes to the pool under a single lock acquisition.
+	 */
+	if (NULL != deadNodes) {
+		/* Pass 1: Delete all the weak refs without holding any lock. */
+		J9MemberNameListNode *node = deadNodes;
+		while (NULL != node) {
+			vmFuncs->j9jni_deleteGlobalRef((JNIEnv*)currentThread, node->memberName, JNI_TRUE);
+			node = node->next;
+		}
+		/* Pass 2: return all nodes to the pool under a single lock. */
+		omrthread_monitor_enter(vm->memberNameListsMutex);
+		while (NULL != deadNodes) {
+			J9MemberNameListNode *dead = deadNodes;
+			deadNodes = dead->next;
+			pool_removeElement(vm->memberNameListNodePool, dead);
+		}
+		omrthread_monitor_exit(vm->memberNameListsMutex);
+	}
+	if (!success && (NULL != weakRef)) {
+		vmFuncs->j9jni_deleteGlobalRef((JNIEnv*)currentThread, weakRef, JNI_TRUE);
+	}
 	return success;
 }
 
