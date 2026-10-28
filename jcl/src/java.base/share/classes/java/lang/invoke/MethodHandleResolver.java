@@ -239,6 +239,9 @@ final class MethodHandleResolver {
 
 	@SuppressWarnings("unused")
 	private static final Object resolveInvokeDynamic(long j9class, String name, String methodDescriptor, long bsmData) throws Throwable {
+		if (MethodHandleStatics.TRACE_LF_PREGENERATION) {
+			MethodHandleStatics.CNT_RESOLVE_INDY.incrementAndGet();
+		}
 /*[IF OPENJDK_METHODHANDLES]*/
 		VMLangAccess access = VM.getVMLangAccess();
 		Class<?> classObject = getClassFromJ9Class(j9class);
