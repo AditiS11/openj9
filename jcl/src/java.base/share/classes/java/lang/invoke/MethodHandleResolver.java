@@ -240,6 +240,11 @@ final class MethodHandleResolver {
 	@SuppressWarnings("unused")
 	private static final Object resolveInvokeDynamic(long j9class, String name, String methodDescriptor, long bsmData) throws Throwable {
 /*[IF OPENJDK_METHODHANDLES]*/
+		long indyT0 = 0;
+		if (MethodHandleStatics.TRACE_LF_PREGENERATION) {
+			MethodHandleStatics.CNT_RESOLVE_INDY.incrementAndGet();
+			indyT0 = System.nanoTime();
+		}
 		VMLangAccess access = VM.getVMLangAccess();
 		Class<?> classObject = getClassFromJ9Class(j9class);
 		Object internalConstantPool = access.getInternalConstantPoolFromJ9Class(j9class, classObject);
@@ -267,11 +272,22 @@ final class MethodHandleResolver {
 			Object[] staticArgs = new Object[bsmArgCount];
 			/* Static optional arguments */
 			int bsmTypeArgCount = bsm.type().parameterCount();
-			for (int i = 0; i < bsmArgCount; i++) {
-				staticArgs[i] = getAdditionalBsmArg(access, internalConstantPool, classObject, bsm, bsmArgs, bsmTypeArgCount, i);
+			if (MethodHandleStatics.HOIST_BSM_CP && (bsmArgCount > 0)) {
+				/* Get the ConstantPool once per site rather than once per argument. */
+				ConstantPool siteCP = access.getConstantPool(internalConstantPool);
+				for (int i = 0; i < bsmArgCount; i++) {
+					staticArgs[i] = getAdditionalBsmArg(siteCP, internalConstantPool, classObject, bsm, bsmArgs, bsmTypeArgCount, i);
+				}
+			} else {
+				for (int i = 0; i < bsmArgCount; i++) {
+					staticArgs[i] = getAdditionalBsmArg(access, internalConstantPool, classObject, bsm, bsmArgs, bsmTypeArgCount, i);
+				}
 			}
 
 			Object[] appendixResult = new Object[1];
+			if (MethodHandleStatics.TRACE_LF_PREGENERATION) {
+				MethodHandleStatics.NS_INDY_PREP.addAndGet(System.nanoTime() - indyT0);
+			}
 
 /*[IF JAVA_SPEC_VERSION >= 11]*/
 		try {
@@ -610,16 +626,19 @@ final class MethodHandleResolver {
 	 * @throws Throwable any throwable will be handled by the caller
 	 */
 	private static final Object getAdditionalBsmArg(VMLangAccess access, Object internalConstantPool, Class<?> classObject, MethodHandle bsm, long bsmArgs, int bsmTypeArgCount, int argIndex) throws Throwable {
+		/* The ConstantPool natives expect an InternalConstantPool to extract the j9constantpool
+		 * from.
+		 */
+		return getAdditionalBsmArg(access.getConstantPool(internalConstantPool), internalConstantPool, classObject, bsm, bsmArgs, bsmTypeArgCount, argIndex);
+	}
+
+	/* Same as above, but the caller supplies the ConstantPool object. */
+	private static final Object getAdditionalBsmArg(ConstantPool cp, Object internalConstantPool, Class<?> classObject, MethodHandle bsm, long bsmArgs, int bsmTypeArgCount, int argIndex) throws Throwable {
 		/* Check if we need to treat the last parameter specially when handling primitives.
 		 * The type of the varargs array will determine how primitive ints from the constantpool
 		 * get boxed: {Boolean, Byte, Short, Character or Integer}.
 		 */
 		boolean treatLastArgAsVarargs = bsm.isVarargsCollector();
-
-		/* The ConstantPool natives expect an InternalConstantPool to extract the j9constantpool
-		 * from.
-		 */
-		ConstantPool cp = access.getConstantPool(internalConstantPool);
 
 		int staticArgIndex = BSM_OPTIONAL_ARGUMENTS_START_INDEX + argIndex;
 		short index = UNSAFE.getShort(bsmArgs + (argIndex * BSM_ARGUMENT_SIZE));
