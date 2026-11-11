@@ -152,6 +152,84 @@ ffiCallWithSetJmpForUpcall(J9VMThread *currentThread, ffi_cif *cif, void *functi
 }
 #endif /* JAVA_SPEC_VERSION >= 16 */
 
+#if defined(J9VM_OPT_OPENJDK_METHODHANDLE)
+/* DIAGNOSTIC ONLY: counts how often the OpenJDK-MH interpreter paths execute.
+ * Remove this #define to compile all of it out. Counters are not atomic, so a
+ * race can only make a count slightly low. Printed to stderr at process exit.
+ */
+#define MH_EXEC_STATS
+#endif /* defined(J9VM_OPT_OPENJDK_METHODHANDLE) */
+
+#if defined(MH_EXEC_STATS)
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+enum {
+	MHX_INDY_RESOLVED,
+	MHX_INDY_UNRESOLVED,
+	MHX_IH_RESOLVED_VHGUARD,    /* invokehandle resolved, target is a VarHandleGuards method */
+	MHX_IH_RESOLVED_OTHER,      /* invokehandle resolved, target is anything else (MethodHandle.invoke/invokeExact linker, VarHandle fallback linker) */
+	MHX_IH_UNRESOLVED,
+	MHX_INVOKEBASIC,
+	MHX_LINKTOSTATICSPECIAL,
+	MHX_LINKTOVIRTUAL,
+	MHX_LINKTOINTERFACE,
+	MHX_COUNT
+};
+
+static UDATA mhxCounts[MHX_COUNT];
+static bool mhxRegistered = false;
+static bool mhxPrinted = false;
+
+static void
+mhxReport(void)
+{
+	if (mhxPrinted) {
+		return;
+	}
+	mhxPrinted = true;
+	unsigned long ihTotal = (unsigned long)(mhxCounts[MHX_IH_RESOLVED_VHGUARD] + mhxCounts[MHX_IH_RESOLVED_OTHER] + mhxCounts[MHX_IH_UNRESOLVED]);
+	unsigned long indyTotal = (unsigned long)(mhxCounts[MHX_INDY_RESOLVED] + mhxCounts[MHX_INDY_UNRESOLVED]);
+	fprintf(stderr, "[MH_EXEC] ========== OpenJDK MH interpreter execution counts ==========\n");
+	fprintf(stderr, "[MH_EXEC] invokedynamic executed          : %lu (resolved path %lu, resolve-needed %lu)\n",
+			indyTotal, (unsigned long)mhxCounts[MHX_INDY_RESOLVED], (unsigned long)mhxCounts[MHX_INDY_UNRESOLVED]);
+	fprintf(stderr, "[MH_EXEC] invokehandle executed           : %lu (resolve-needed %lu)\n",
+			ihTotal, (unsigned long)mhxCounts[MHX_IH_UNRESOLVED]);
+	fprintf(stderr, "[MH_EXEC]   resolved -> VarHandleGuards   : %lu\n", (unsigned long)mhxCounts[MHX_IH_RESOLVED_VHGUARD]);
+	fprintf(stderr, "[MH_EXEC]   resolved -> other linker      : %lu\n", (unsigned long)mhxCounts[MHX_IH_RESOLVED_OTHER]);
+	fprintf(stderr, "[MH_EXEC] invokeBasic (INL) executed      : %lu\n", (unsigned long)mhxCounts[MHX_INVOKEBASIC]);
+	fprintf(stderr, "[MH_EXEC] linkToStatic/Special executed   : %lu\n", (unsigned long)mhxCounts[MHX_LINKTOSTATICSPECIAL]);
+	fprintf(stderr, "[MH_EXEC] linkToVirtual executed          : %lu\n", (unsigned long)mhxCounts[MHX_LINKTOVIRTUAL]);
+	fprintf(stderr, "[MH_EXEC] linkToInterface executed        : %lu\n", (unsigned long)mhxCounts[MHX_LINKTOINTERFACE]);
+	fprintf(stderr, "[MH_EXEC] =============================================================\n");
+	fflush(stderr);
+}
+
+static inline void
+mhxCount(int which)
+{
+	if (!mhxRegistered) {
+		mhxRegistered = true;
+		atexit(mhxReport);
+	}
+	mhxCounts[which]++;
+}
+
+/* True if the class that declares 'method' is java/lang/invoke/VarHandleGuards. */
+static inline bool
+mhxIsVarHandleGuards(J9Method *method)
+{
+	static const char guardsName[] = "java/lang/invoke/VarHandleGuards";
+	J9UTF8 *className = J9ROMCLASS_CLASSNAME(J9_CLASS_FROM_METHOD(method)->romClass);
+	return (J9UTF8_LENGTH(className) == (sizeof(guardsName) - 1))
+		&& (0 == memcmp(J9UTF8_DATA(className), guardsName, sizeof(guardsName) - 1));
+}
+#define MHX_COUNT_EVENT(which) mhxCount(which)
+#else /* defined(MH_EXEC_STATS) */
+#define MHX_COUNT_EVENT(which) do { } while (0)
+#endif /* defined(MH_EXEC_STATS) */
+
 class INTERPRETER_CLASS
 {
 /*
@@ -9538,6 +9616,7 @@ done:
 		j9object_t invokeCacheArray = (ramConstantPool->ramClass->callSites)[index];
 
 		if (J9_EXPECTED(NULL != invokeCacheArray)) {
+			MHX_COUNT_EVENT(MHX_INDY_RESOLVED);
 			/* Fetch target method and appendix from invokeCacheArray (2 element array)
 			 * Stack transitions from:
 			 * 		args <- SP
@@ -9557,6 +9636,7 @@ done:
 				*--_sp = (UDATA)appendix;
 			}
 		} else {
+			MHX_COUNT_EVENT(MHX_INDY_UNRESOLVED);
 			buildGenericSpecialStackFrame(REGISTER_ARGS, 0);
 			updateVMStruct(REGISTER_ARGS);
 			/* The resolution is performed by MethodHandleNatives.linkCallSite(*).
@@ -9650,12 +9730,16 @@ done:
 		if (J9_EXPECTED(NULL != invokeCacheArray)) {
 			j9object_t memberName = (j9object_t)J9JAVAARRAYOFOBJECT_LOAD(_currentThread, invokeCacheArray, 0);
 			_sendMethod = (J9Method *)(UDATA)J9OBJECT_U64_LOAD(_currentThread, memberName, _vm->vmtargetOffset);
+#if defined(MH_EXEC_STATS)
+			mhxCount(mhxIsVarHandleGuards(_sendMethod) ? MHX_IH_RESOLVED_VHGUARD : MHX_IH_RESOLVED_OTHER);
+#endif /* defined(MH_EXEC_STATS) */
 
 			j9object_t appendix = (j9object_t)J9JAVAARRAYOFOBJECT_LOAD(_currentThread, invokeCacheArray, 1);
 			if (NULL != appendix) {
 				*--_sp = (UDATA)appendix;
 			}
 		} else {
+			MHX_COUNT_EVENT(MHX_IH_UNRESOLVED);
 			buildGenericSpecialStackFrame(REGISTER_ARGS, 0);
 			updateVMStruct(REGISTER_ARGS);
 			/* The resolution is performed by MethodHandleNatives.linkMethod(*).
@@ -9767,6 +9851,7 @@ done:
 	VMINLINE VM_BytecodeAction
 	invokeBasic(REGISTER_ARGS_LIST)
 	{
+		MHX_COUNT_EVENT(MHX_INVOKEBASIC);
 		VM_BytecodeAction rc = GOTO_RUN_METHOD;
 		bool fromJIT = J9_ARE_ANY_BITS_SET(jitStackFrameFlags(REGISTER_ARGS, 0), J9_SSF_JIT_NATIVE_TRANSITION_FRAME);
 		UDATA mhReceiverIndex = 0;
@@ -9808,6 +9893,7 @@ done:
 	VMINLINE VM_BytecodeAction
 	linkToStaticSpecial(REGISTER_ARGS_LIST)
 	{
+		MHX_COUNT_EVENT(MHX_LINKTOSTATICSPECIAL);
 		VM_BytecodeAction rc = GOTO_RUN_METHOD;
 		bool fromJIT = J9_ARE_ANY_BITS_SET(jitStackFrameFlags(REGISTER_ARGS, 0), J9_SSF_JIT_NATIVE_TRANSITION_FRAME);
 		J9ROMMethod *romMethod = NULL;
@@ -9891,6 +9977,7 @@ throw_npe:
 	VMINLINE VM_BytecodeAction
 	linkToVirtual(REGISTER_ARGS_LIST)
 	{
+		MHX_COUNT_EVENT(MHX_LINKTOVIRTUAL);
 		VM_BytecodeAction rc = GOTO_RUN_METHOD;
 		bool fromJIT = J9_ARE_ANY_BITS_SET(jitStackFrameFlags(REGISTER_ARGS, 0), J9_SSF_JIT_NATIVE_TRANSITION_FRAME);
 
@@ -9981,6 +10068,7 @@ throw_npe:
 	VMINLINE VM_BytecodeAction
 	linkToInterface(REGISTER_ARGS_LIST)
 	{
+		MHX_COUNT_EVENT(MHX_LINKTOINTERFACE);
 		VM_BytecodeAction rc = GOTO_RUN_METHOD;
 		bool fromJIT = J9_ARE_ANY_BITS_SET(jitStackFrameFlags(REGISTER_ARGS, 0), J9_SSF_JIT_NATIVE_TRANSITION_FRAME);
 		J9ROMMethod *romMethod = NULL;
