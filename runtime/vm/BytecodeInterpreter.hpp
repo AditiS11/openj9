@@ -169,7 +169,8 @@ enum {
 	MHX_INDY_RESOLVED,
 	MHX_INDY_UNRESOLVED,
 	MHX_IH_RESOLVED_VHGUARD,    /* invokehandle resolved, target is a VarHandleGuards method */
-	MHX_IH_RESOLVED_OTHER,      /* invokehandle resolved, target is anything else (MethodHandle.invoke/invokeExact linker, VarHandle fallback linker) */
+	MHX_IH_RESOLVED_OTHER,      /* invokehandle resolved, target is a MethodHandle.invoke/invokeExact linker */
+	MHX_IH_RESOLVED_VHFALLBACK, /* invokehandle resolved, appendix is a VarHandle$AccessDescriptor but target is not VarHandleGuards (VarHandle fallback LambdaForm linker) */
 	MHX_IH_UNRESOLVED,
 	MHX_INVOKEBASIC,
 	MHX_LINKTOSTATICSPECIAL,
@@ -189,7 +190,7 @@ mhxReport(void)
 		return;
 	}
 	mhxPrinted = true;
-	unsigned long ihTotal = (unsigned long)(mhxCounts[MHX_IH_RESOLVED_VHGUARD] + mhxCounts[MHX_IH_RESOLVED_OTHER] + mhxCounts[MHX_IH_UNRESOLVED]);
+	unsigned long ihTotal = (unsigned long)(mhxCounts[MHX_IH_RESOLVED_VHGUARD] + mhxCounts[MHX_IH_RESOLVED_OTHER] + mhxCounts[MHX_IH_RESOLVED_VHFALLBACK] + mhxCounts[MHX_IH_UNRESOLVED]);
 	unsigned long indyTotal = (unsigned long)(mhxCounts[MHX_INDY_RESOLVED] + mhxCounts[MHX_INDY_UNRESOLVED]);
 	fprintf(stderr, "[MH_EXEC] ========== OpenJDK MH interpreter execution counts ==========\n");
 	fprintf(stderr, "[MH_EXEC] invokedynamic executed          : %lu (resolved path %lu, resolve-needed %lu)\n",
@@ -197,7 +198,8 @@ mhxReport(void)
 	fprintf(stderr, "[MH_EXEC] invokehandle executed           : %lu (resolve-needed %lu)\n",
 			ihTotal, (unsigned long)mhxCounts[MHX_IH_UNRESOLVED]);
 	fprintf(stderr, "[MH_EXEC]   resolved -> VarHandleGuards   : %lu\n", (unsigned long)mhxCounts[MHX_IH_RESOLVED_VHGUARD]);
-	fprintf(stderr, "[MH_EXEC]   resolved -> other linker      : %lu\n", (unsigned long)mhxCounts[MHX_IH_RESOLVED_OTHER]);
+	fprintf(stderr, "[MH_EXEC]   resolved -> VarHandle fallback: %lu\n", (unsigned long)mhxCounts[MHX_IH_RESOLVED_VHFALLBACK]);
+	fprintf(stderr, "[MH_EXEC]   resolved -> MH invoke linker  : %lu\n", (unsigned long)mhxCounts[MHX_IH_RESOLVED_OTHER]);
 	fprintf(stderr, "[MH_EXEC] invokeBasic (INL) executed      : %lu\n", (unsigned long)mhxCounts[MHX_INVOKEBASIC]);
 	fprintf(stderr, "[MH_EXEC] linkToStatic/Special executed   : %lu\n", (unsigned long)mhxCounts[MHX_LINKTOSTATICSPECIAL]);
 	fprintf(stderr, "[MH_EXEC] linkToVirtual executed          : %lu\n", (unsigned long)mhxCounts[MHX_LINKTOVIRTUAL]);
@@ -214,6 +216,16 @@ mhxCount(int which)
 		atexit(mhxReport);
 	}
 	mhxCounts[which]++;
+}
+
+/* True if 'clazz' is java/lang/invoke/VarHandle$AccessDescriptor (the invokehandle appendix of a VarHandle call). */
+static inline bool
+mhxIsAccessDescriptor(J9Class *clazz)
+{
+	static const char adName[] = "java/lang/invoke/VarHandle$AccessDescriptor";
+	J9UTF8 *className = J9ROMCLASS_CLASSNAME(clazz->romClass);
+	return (J9UTF8_LENGTH(className) == (sizeof(adName) - 1))
+		&& (0 == memcmp(J9UTF8_DATA(className), adName, sizeof(adName) - 1));
 }
 
 /* True if the class that declares 'method' is java/lang/invoke/VarHandleGuards. */
@@ -9730,11 +9742,17 @@ done:
 		if (J9_EXPECTED(NULL != invokeCacheArray)) {
 			j9object_t memberName = (j9object_t)J9JAVAARRAYOFOBJECT_LOAD(_currentThread, invokeCacheArray, 0);
 			_sendMethod = (J9Method *)(UDATA)J9OBJECT_U64_LOAD(_currentThread, memberName, _vm->vmtargetOffset);
-#if defined(MH_EXEC_STATS)
-			mhxCount(mhxIsVarHandleGuards(_sendMethod) ? MHX_IH_RESOLVED_VHGUARD : MHX_IH_RESOLVED_OTHER);
-#endif /* defined(MH_EXEC_STATS) */
 
 			j9object_t appendix = (j9object_t)J9JAVAARRAYOFOBJECT_LOAD(_currentThread, invokeCacheArray, 1);
+#if defined(MH_EXEC_STATS)
+			if (mhxIsVarHandleGuards(_sendMethod)) {
+				mhxCount(MHX_IH_RESOLVED_VHGUARD);
+			} else if ((NULL != appendix) && mhxIsAccessDescriptor(J9OBJECT_CLAZZ(_currentThread, appendix))) {
+				mhxCount(MHX_IH_RESOLVED_VHFALLBACK);
+			} else {
+				mhxCount(MHX_IH_RESOLVED_OTHER);
+			}
+#endif /* defined(MH_EXEC_STATS) */
 			if (NULL != appendix) {
 				*--_sp = (UDATA)appendix;
 			}

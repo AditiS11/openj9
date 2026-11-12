@@ -240,8 +240,14 @@ final class MethodHandleResolver {
 	@SuppressWarnings("unused")
 	private static final Object resolveInvokeDynamic(long j9class, String name, String methodDescriptor, long bsmData) throws Throwable {
 /*[IF OPENJDK_METHODHANDLES]*/
-		long statsStart = MethodHandleStatics.TRACE_MH_STATS ? System.nanoTime() : 0L;
+		final boolean statsOn = MethodHandleStatics.TRACE_MH_STATS;
+		long statsStart = statsOn ? System.nanoTime() : 0L;
 		long statsLinkNs = 0L;
+		long statsTypeNs = 0L;
+		long statsAccessNs = 0L;
+		long statsBsmNs = 0L;
+		long statsArgsNs = 0L;
+		String statsBsmKey = "?";
 		VMLangAccess access = VM.getVMLangAccess();
 		Class<?> classObject = getClassFromJ9Class(j9class);
 		Object internalConstantPool = access.getInternalConstantPoolFromJ9Class(j9class, classObject);
@@ -249,9 +255,15 @@ final class MethodHandleResolver {
 		MethodType type = null;
 		Object[] result = new Object[2];
 /*[IF JAVA_SPEC_VERSION >= 11]*/
+		long statsT0 = statsOn ? System.nanoTime() : 0L;
 		type = MethodTypeHelper.vmResolveFromMethodDescriptorString(methodDescriptor, access.getClassloader(classObject), null);
+		long statsT1 = statsOn ? System.nanoTime() : 0L;
 		final MethodHandles.Lookup lookup = IMPL_LOOKUP.in(classObject);
 		inaccessibleTypeCheck(lookup, type);
+		if (statsOn) {
+			statsTypeNs = statsT1 - statsT0;
+			statsAccessNs = System.nanoTime() - statsT1;
+		}
 /*[ELSE] JAVA_SPEC_VERSION >= 11*/
 		try {
 			type = MethodTypeHelper.vmResolveFromMethodDescriptorString(methodDescriptor, access.getClassloader(classObject), null);
@@ -260,17 +272,30 @@ final class MethodHandleResolver {
 			int bsmIndex = UNSAFE.getShort(bsmData);
 			int bsmArgCount = UNSAFE.getShort(bsmData + BSM_ARGUMENT_COUNT_OFFSET);
 			long bsmArgs = bsmData + BSM_ARGUMENTS_OFFSET;
+			long statsB0 = statsOn ? System.nanoTime() : 0L;
 			MethodHandle bsm = getCPMethodHandleAt(internalConstantPool, bsmIndex);
+			if (statsOn) {
+				statsBsmNs = System.nanoTime() - statsB0;
+			}
 			if (bsm == null) {
 				/*[MSG "K05cd", "unable to resolve 'bootstrap_method_ref' in '{0}' at index {1}"]*/
 				throw new NullPointerException(Msg.getString("K05cd", classObject.toString(), bsmIndex)); //$NON-NLS-1$
 			}
 
+			long statsA0 = statsOn ? System.nanoTime() : 0L;
 			Object[] staticArgs = new Object[bsmArgCount];
 			/* Static optional arguments */
 			int bsmTypeArgCount = bsm.type().parameterCount();
 			for (int i = 0; i < bsmArgCount; i++) {
 				staticArgs[i] = getAdditionalBsmArg(access, internalConstantPool, classObject, bsm, bsmArgs, bsmTypeArgCount, i);
+			}
+			if (statsOn) {
+				statsArgsNs = System.nanoTime() - statsA0;
+				/* "LambdaMetafactory.metafactory" or "StringConcatFactory.makeConcatWithConstants" etc. */
+				MemberName bsmMember = bsm.internalMemberName();
+				statsBsmKey = (bsmMember != null)
+						? bsmMember.getDeclaringClass().getSimpleName() + "." + bsmMember.getName()
+						: bsm.toString();
 			}
 
 			Object[] appendixResult = new Object[1];
@@ -335,7 +360,10 @@ final class MethodHandleResolver {
 				throw new Error(nsme);
 			}
 		}
-		if (MethodHandleStatics.TRACE_MH_STATS) MHStats.indy(System.nanoTime() - statsStart, statsLinkNs);
+		if (statsOn) {
+			MHStats.indy(statsBsmKey, classObject.getName(), System.nanoTime() - statsStart, statsLinkNs,
+					statsTypeNs, statsAccessNs, statsBsmNs, statsArgsNs);
+		}
 		return (Object)result;
 /*[ELSE] OPENJDK_METHODHANDLES*/
 		MethodHandle result = null;
@@ -469,6 +497,7 @@ final class MethodHandleResolver {
 			String typeDescriptor,
 			ClassLoader loader) throws Throwable {
 /*[IF OPENJDK_METHODHANDLES]*/
+		long statsMhStart = MethodHandleStatics.TRACE_MH_STATS ? System.nanoTime() : 0L;
 		Object type = null;
 		MethodType mt = null;
 		switch (cpRefKind) {
@@ -497,6 +526,13 @@ final class MethodHandleResolver {
 		inaccessibleTypeCheck(lookup, mt);
 /*[ENDIF] JAVA_SPEC_VERSION >= 11 */
 
+		if (MethodHandleStatics.TRACE_MH_STATS) {
+			try {
+				return MethodHandleNatives.linkMethodHandleConstant(currentClass, cpRefKind, referenceClazz, name, type);
+			} finally {
+				MHStats.mhConstant(cpRefKind, System.nanoTime() - statsMhStart);
+			}
+		}
 		return MethodHandleNatives.linkMethodHandleConstant(currentClass, cpRefKind, referenceClazz, name, type);
 /*[ELSE] OPENJDK_METHODHANDLES*/
 		MethodType type = null;
