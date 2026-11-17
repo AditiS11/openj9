@@ -113,8 +113,8 @@ addMemberNameToClass(J9VMThread *currentThread, j9object_t memberNameObject, j9o
 
 	omrthread_monitor_enter(vm->memberNameListsMutex);
 
-	if (J9_ARE_ALL_BITS_SET(j9clazz->classFlags, J9ClassNeedToPruneMemberNames)) {
-		VM_AtomicSupport::bitAndU32((volatile uint32_t*)&j9clazz->classFlags, ~(uint32_t)J9ClassNeedToPruneMemberNames);
+	if (NULL != j9clazz->memberNames) {
+
 
 		/* Remove all entries of memberNames for which the JNI weak ref has been cleared. */
 		J9MemberNameListNode **cur = &j9clazz->memberNames;
